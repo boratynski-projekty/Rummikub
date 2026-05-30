@@ -274,12 +274,57 @@ export default function GameApp({ userId }: { userId: string }) {
   const ghost = useRef<HTMLElement | null>(null);
   const caret = useRef<HTMLElement | null>(null);
   const fromMeld = useRef<HTMLElement | null>(null);
+  const gameState = useRef<any>(null);
+  const gameCh = useRef<any>(null);
+  const curTurnUid = useRef<string | null>(null);
+  const endedFor = useRef<string | null>(null);
 
-  function startGame() {
-    const r = roomRef.current!; const uid = meRef.current!.id;
-    players.current = [{ nick: meRef.current!.nick, me: true, profile: meRef.current }, ...r.seats.filter((s) => !s.me).map((s) => ({ nick: s.nick, profile: s, tiles: 14 }))];
-    turn.current = 0; playedThisTurn.current = false; entered.current = false; setEntryInfo(null); setView("game");
-    requestAnimationFrame(() => { setupBoard(); setupTimer(r.table.time_mode); syncTurnUI(); });
+  function buildDeck() {
+    const deck: any[] = [];
+    for (let copy = 0; copy < 2; copy++) for (const c of COLORS) for (let n = 1; n <= 13; n++) deck.push({ n, c, j: false });
+    deck.push({ n: null, c: "czerwony", j: true }); deck.push({ n: null, c: "czarny", j: true });
+    for (let i = deck.length - 1; i > 0; i--) { const k = Math.floor(Math.random() * (i + 1)); [deck[i], deck[k]] = [deck[k], deck[i]]; }
+    return deck;
+  }
+  async function startGame() {
+    const r = roomRef.current!; setView("game"); playedThisTurn.current = false; endedFor.current = null; setEntryInfo(null);
+    let { data: gs } = await supabase.from("game_state").select("*").eq("table_id", r.table.id).maybeSingle();
+    if (!gs && r.iAmOwner) {
+      const order = r.seats.map((s) => s.id);
+      const deck = buildDeck(); const hands: Record<string, any[]> = {}; const ent: Record<string, boolean> = {};
+      order.forEach((uid) => { hands[uid] = deck.splice(0, 14); ent[uid] = false; });
+      const { data: ins } = await supabase.from("game_state")
+        .insert({ table_id: r.table.id, board: [], hands, pool: deck, turn_order: order, turn: order[0], entered: ent, winner: null })
+        .select().single();
+      gs = ins;
+    }
+    subGame(r.table.id); setupTimer(r.table.time_mode);
+    requestAnimationFrame(() => { if (gameState.current) applyState(gameState.current); else if (gs) applyState(gs); });
+  }
+  function subGame(tableId: string) {
+    if (gameCh.current) supabase.removeChannel(gameCh.current);
+    const ch = supabase.channel("game-" + tableId)
+      .on("postgres_changes", { event: "*", schema: "public", table: "game_state", filter: `table_id=eq.${tableId}` },
+        (payload: any) => { if (payload.new) applyState(payload.new); })
+      .subscribe();
+    gameCh.current = ch; roomChans.current.push(ch);
+  }
+  function applyState(s: any) {
+    gameState.current = s; const myId = meRef.current!.id;
+    if (!el("tray")) { requestAnimationFrame(() => applyState(s)); return; }
+    turn.current = s.turn === myId ? 0 : 1;
+    entered.current = !!(s.entered && s.entered[myId]);
+    playedThisTurn.current = false;
+    curTurnUid.current = s.turn;
+    players.current = [{ nick: meRef.current!.nick, me: true, profile: meRef.current }];
+    (s.turn_order || []).forEach((uid: string) => {
+      if (uid === myId) return;
+      const seat = roomRef.current?.seats.find((x) => x.id === uid);
+      players.current.push({ uid, nick: seat?.nick || "Gracz", profile: seat || {}, tiles: (s.hands?.[uid] || []).length, isTurn: s.turn === uid });
+    });
+    buildBoard(s.board || []); buildRack((s.hands && s.hands[myId]) || []);
+    tidy(); syncTurnUI();
+    if (s.winner && endedFor.current !== s.winner) { endedFor.current = s.winner; stopTimer(); recordResult(s.winner === myId); setEndBanner({ won: s.winner === myId }); }
   }
   function tray() { return el("tray"); }
   function melds() { return el("melds"); }
@@ -287,14 +332,13 @@ export default function GameApp({ userId }: { userId: string }) {
     const d = document.createElement("div"); d.className = "tile c-" + c + (joker ? " joker" : ""); d.dataset.id = String(++tileId.current);
     d.textContent = joker ? "★" : String(n); d.dataset.n = n == null ? "" : String(n); d.dataset.c = c; d.dataset.joker = joker ? "1" : ""; attachDrag(d); return d;
   }
+  function mkTileObj(t: any) { return mkTile(t.n, t.c, !!t.j); }
   function newMeld() { const e = document.createElement("div"); e.className = "meld"; melds().appendChild(e); return e; }
-  function setupBoard() {
-    tray().innerHTML = ""; melds().innerHTML = "";
-    const hand: [number | null, string, string?][] = [[7, "czerwony"], [8, "czerwony"], [9, "czerwony"], [3, "blekitny"], [3, "czarny"], [3, "pomaranczowy"], [11, "czarny"], [12, "czarny"], [5, "pomaranczowy"], [10, "blekitny"], [1, "czerwony"], [6, "czarny"], [null, "czerwony", "j"], [13, "blekitny"]];
-    hand.forEach((h) => tray().appendChild(mkTile(h[0], h[1], !!h[2])));
-    // nowy stół zaczyna PUSTY — gracze sami wykładają układy
-    tidy();
-  }
+  function buildBoard(board: any[]) { melds().innerHTML = ""; board.forEach((m: any[]) => { const e = newMeld(); m.forEach((t) => e.appendChild(mkTileObj(t))); }); }
+  function buildRack(hand: any[]) { tray().innerHTML = ""; hand.forEach((t) => tray().appendChild(mkTileObj(t))); }
+  function serializeBoard() { return [...melds().querySelectorAll(".meld")].map((m) => tilesOf(m).map((t) => ({ n: t.n, c: t.c, j: t.joker }))); }
+  function serializeRack() { return [...tray().querySelectorAll<HTMLElement>(".tile")].map((t) => ({ n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c, j: t.dataset.joker === "1" })); }
+  function committedPoints() { return ((gameState.current?.board) || []).reduce((sum: number, m: any[]) => sum + meldPoints(m.map((t) => ({ n: t.n, c: t.c, joker: t.j }))), 0); }
   function tidy() { melds().querySelectorAll(".meld").forEach((m) => { if (!m.querySelector(".tile")) m.remove(); }); el("hint").style.display = melds().querySelector(".meld") ? "none" : "grid"; const c = el("count"); if (c) c.textContent = String(tray().children.length); }
   function tilesOf(m: Element) { return [...m.querySelectorAll<HTMLElement>(".tile")].map((t) => ({ n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c!, joker: t.dataset.joker === "1" })); }
   function validMeld(arr: { n: number | null; c: string; joker: boolean }[]) {
@@ -323,15 +367,14 @@ export default function GameApp({ userId }: { userId: string }) {
     const loc = locate(e.clientX, e.clientY); const d = drag.current!; d.classList.remove("dragging"); const c = caret.current!; if (c.parentNode) c.remove();
     if (loc) { let cont: any = loc.cont; if (cont === "NEW") cont = newMeld(); if (loc.before && loc.before !== c) cont.insertBefore(d, loc.before); else cont.appendChild(d);
       if (cont.classList && cont.classList.contains("meld")) { if (!validMeld(tilesOf(cont))) { cont.classList.add("bad"); const ref = cont; setTimeout(() => ref.classList.remove("bad"), 350); tray().appendChild(d); } else if (fromMeld.current !== cont) playedThisTurn.current = true; } }
-    tidy(); syncTurnUI(); if (tray().children.length === 0 && entered.current && boardState().complete) endGame(true);
+    tidy(); syncTurnUI();
     ghost.current?.remove(); ghost.current = null; drag.current = null; caret.current = null; fromMeld.current = null;
   }
   function renderOpps() {
     const box = el("opponents"); if (!box) return;
-    box.innerHTML = players.current.slice(1).map((o: any, i: number) => { const idx = i + 1, isTurn = turn.current === idx; const p = o.profile || {};
+    box.innerHTML = players.current.slice(1).map((o: any) => { const p = o.profile || {};
       const av = p.avatar_url ? `<img src="${p.avatar_url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">` : esc(o.nick).slice(0, 2).toUpperCase();
-      return `<div class="opp ${isTurn ? "turn" : ""}"><div class="avatar" style="width:34px;height:34px;background:${AVCOL[COLORS[(p.code ? p.code.charCodeAt(3) : i) % 4]]}">${av}<span class="dot ${p.status || "on"}"></span></div><div class="meta"><div class="nick">${esc(o.nick)}</div><div class="tiles">${o.tiles} klocków</div></div>${isTurn ? `<button class="skip" data-skip="${idx}">Pomiń</button>` : ""}</div>`; }).join("");
-    box.querySelectorAll("[data-skip]").forEach((b) => ((b as HTMLElement).onclick = () => nextTurn()));
+      return `<div class="opp ${o.isTurn ? "turn" : ""}"><div class="avatar" style="width:34px;height:34px;background:${AVCOL[COLORS[(p.code ? p.code.charCodeAt(3) : 0) % 4]]}">${av}<span class="dot ${p.status || "on"}"></span></div><div class="meta"><div class="nick">${esc(o.nick)}</div><div class="tiles">${o.tiles} klocków</div></div></div>`; }).join("");
   }
   function meldPoints(arr: { n: number | null; c: string; joker: boolean }[]) {
     const real = arr.filter((t) => !t.joker); if (!real.length) return 0;
@@ -352,35 +395,53 @@ export default function GameApp({ userId }: { userId: string }) {
     const my = turn.current === 0; const yl = el("youlabel"); if (!yl) return;
     yl.classList.toggle("off", !my); yl.innerHTML = (my ? "Twoja kolej" : "Czekaj na swój ruch") + ' · <span id="count">' + tray().children.length + "</span> klocków";
     (el("draw") as HTMLButtonElement).disabled = !my; (el("sort") as HTMLButtonElement).disabled = false;
-    const b = boardState();
+    const b = boardState(); const newPts = b.points - committedPoints();
     let canEnd = my && playedThisTurn.current && b.complete;
-    if (my && !entered.current) canEnd = canEnd && b.points >= 30;
+    if (my && !entered.current) canEnd = canEnd && newPts >= 30;
     (el("endturn") as HTMLButtonElement).disabled = !canEnd;
-    setEntryInfo(my && !entered.current ? { points: b.points, canClear: b.tiles > 0, complete: b.complete } : null);
+    setEntryInfo(my && !entered.current ? { points: newPts, canClear: playedThisTurn.current, complete: b.complete } : null);
     renderOpps(); resetRoundTimer();
   }
-  function attemptEndTurn() {
+  async function commitTurn() {
+    const s = gameState.current; if (!s) return; const myId = meRef.current!.id;
+    if (s.turn !== myId) return;
     const b = boardState();
     if (b.count === 0 || !b.complete) { toast("Każdy układ musi mieć min. 3 klocki i być poprawny"); return; }
-    if (!entered.current) { if (b.points < 30) { toast(`Aby wejść do gry potrzebujesz min. 30 pkt (masz ${b.points})`); return; } entered.current = true; }
-    nextTurn();
+    if (!entered.current) { const newPts = b.points - committedPoints(); if (newPts < 30) { toast(`Aby wejść do gry potrzebujesz min. 30 pkt (masz ${newPts})`); return; } }
+    const newHand = serializeRack();
+    const hands = { ...s.hands, [myId]: newHand };
+    const ent = { ...s.entered, [myId]: true };
+    const order: string[] = s.turn_order; const nextUid = order[(order.indexOf(myId) + 1) % order.length];
+    const winner = newHand.length === 0 ? myId : (s.winner || null);
+    await supabase.from("game_state").update({ board: serializeBoard(), hands, entered: ent, turn: nextUid, winner }).eq("table_id", s.table_id);
   }
   function clearTilesToRack() {
-    melds().querySelectorAll<HTMLElement>(".meld .tile").forEach((t) => tray().appendChild(t));
+    const s = gameState.current; if (!s) return; const myId = meRef.current!.id;
+    buildBoard(s.board || []); buildRack(s.hands[myId] || []);
     playedThisTurn.current = false; tidy(); syncTurnUI(); toast("Klocki wróciły na tabliczkę");
   }
-  function nextTurn() { turn.current = (turn.current + 1) % players.current.length; playedThisTurn.current = false; syncTurnUI(); }
-  function setupTimer(mode: string) { stopTimer(); const tEl = el("timer"); if (mode === "none") { roundTime.current = null; tEl.textContent = "⏱ bez limitu"; tEl.classList.remove("low"); return; } roundTime.current = +mode; let s = roundTime.current; const tick = () => { tEl.textContent = "⏱ 0:" + String(s).padStart(2, "0"); tEl.classList.toggle("low", s <= 10); if (s <= 0) { nextTurn(); return; } s--; }; tick(); timerInt.current = setInterval(tick, 1000); (tEl as any)._reset = () => { s = roundTime.current!; }; }
+  async function drawTile() {
+    const s = gameState.current; if (!s) return; const myId = meRef.current!.id; if (s.turn !== myId) return;
+    const pool = [...(s.pool || [])]; let hands = s.hands;
+    if (pool.length) { const t = pool.pop(); hands = { ...s.hands, [myId]: [...(s.hands[myId] || []), t] }; } else toast("Brak klocków w puli");
+    const order: string[] = s.turn_order; const nextUid = order[(order.indexOf(myId) + 1) % order.length];
+    await supabase.from("game_state").update({ pool, hands, turn: nextUid }).eq("table_id", s.table_id);
+  }
+  function setupTimer(mode: string) { stopTimer(); const tEl = el("timer"); if (mode === "none") { roundTime.current = null; tEl.textContent = "⏱ bez limitu"; tEl.classList.remove("low"); return; } roundTime.current = +mode; let s = roundTime.current; const tick = () => { tEl.textContent = "⏱ 0:" + String(s).padStart(2, "0"); tEl.classList.toggle("low", s <= 10); if (s <= 0) { if (turn.current === 0) drawTile(); return; } s--; }; tick(); timerInt.current = setInterval(tick, 1000); (tEl as any)._reset = () => { s = roundTime.current!; }; }
   function resetRoundTimer() { const tEl = el("timer"); if (tEl && (tEl as any)._reset) (tEl as any)._reset(); }
   function stopTimer() { if (timerInt.current) clearInterval(timerInt.current); timerInt.current = null; }
   function doSort() { const t = tray(); const ts = [...t.children].filter((x) => x.classList.contains("tile")) as HTMLElement[]; ts.sort((a, b) => COLORS.indexOf(a.dataset.c!) - COLORS.indexOf(b.dataset.c!) || (+a.dataset.n! - +b.dataset.n!)); ts.forEach((x) => t.appendChild(x)); }
-  function doDraw() { const n = 1 + Math.floor(Math.random() * 13), c = COLORS[Math.floor(Math.random() * 4)]; tray().appendChild(mkTile(n, c)); tidy(); nextTurn(); }
-  async function endGame(won: boolean) {
-    stopTimer(); const np = { ...meRef.current! }; if (won) np.wins = (np.wins || 0) + 1; np.games = (np.games || 0) + 1; meRef.current = np; setMe(np);
+  async function recordResult(won: boolean) {
+    const np = { ...meRef.current! }; if (won) np.wins = (np.wins || 0) + 1; np.games = (np.games || 0) + 1; meRef.current = np; setMe(np);
     await supabase.from("profiles").update({ wins: np.wins, games: np.games }).eq("id", np.id);
-    setEndBanner({ won });
   }
-  async function hostEnd() { stopTimer(); const r = roomRef.current!; await supabase.from("game_tables").update({ status: "waiting" }).eq("id", r.table.id); await supabase.from("table_members").update({ ready: false }).eq("table_id", r.table.id); toast("Gra zakończona"); }
+  async function hostEnd() {
+    stopTimer(); const r = roomRef.current!;
+    await supabase.from("game_state").delete().eq("table_id", r.table.id);
+    await supabase.from("game_tables").update({ status: "waiting" }).eq("id", r.table.id);
+    await supabase.from("table_members").update({ ready: false }).eq("table_id", r.table.id);
+    toast("Gra zakończona");
+  }
 
   function cleanupAll() { roomChans.current.forEach((c) => { try { supabase.removeChannel(c); } catch {} }); baseChans.current.forEach((c) => { try { supabase.removeChannel(c); } catch {} }); stopTimer(); }
 
@@ -556,8 +617,8 @@ export default function GameApp({ userId }: { userId: string }) {
             <div className="rackbar">
               <div className="row" style={{ gap: 8 }}><Avatar p={me} size={32} /><div className="you" id="youlabel">Twoja kolej · <span id="count">0</span> klocków</div></div>
               <button className="btn ghost" id="sort" style={{ padding: "8px 12px" }} onClick={doSort}>Sortuj</button>
-              <button className="btn" id="draw" style={{ padding: "8px 12px" }} onClick={doDraw}>Dobierz</button>
-              <button className="btn blue" id="endturn" style={{ padding: "8px 12px", marginLeft: "auto" }} onClick={attemptEndTurn}>Zakończ turę</button>
+              <button className="btn" id="draw" style={{ padding: "8px 12px" }} onClick={drawTile}>Dobierz</button>
+              <button className="btn blue" id="endturn" style={{ padding: "8px 12px", marginLeft: "auto" }} onClick={commitTurn}>Zakończ turę</button>
             </div>
             {entryInfo && (
               <div className="entrybar">

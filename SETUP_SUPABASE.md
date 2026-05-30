@@ -229,12 +229,36 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users for each row execute function handle_new_user();
 
+-- ========= STAN GRY (wspólna talia, ręce, plansza, tura) =========
+create table if not exists game_state (
+  table_id uuid primary key references game_tables(id) on delete cascade,
+  board jsonb not null default '[]',
+  hands jsonb not null default '{}',
+  pool jsonb not null default '[]',
+  turn_order jsonb not null default '[]',
+  turn uuid,
+  entered jsonb not null default '{}',
+  winner uuid,
+  updated_at timestamptz default now()
+);
+alter table game_state enable row level security;
+drop policy if exists gs_select_member on game_state;
+create policy gs_select_member on game_state for select using (
+  public.is_table_member(table_id, auth.uid()) or public.is_table_host(table_id, auth.uid()));
+drop policy if exists gs_insert_host on game_state;
+create policy gs_insert_host on game_state for insert with check (public.is_table_host(table_id, auth.uid()));
+drop policy if exists gs_update_member on game_state;
+create policy gs_update_member on game_state for update using (public.is_table_member(table_id, auth.uid()));
+drop policy if exists gs_delete_host on game_state;
+create policy gs_delete_host on game_state for delete using (public.is_table_host(table_id, auth.uid()));
+
 -- ========= 5) REALTIME =========
 alter publication supabase_realtime add table game_tables;
 alter publication supabase_realtime add table table_members;
 alter publication supabase_realtime add table table_invites;
 alter publication supabase_realtime add table friend_requests;
 alter publication supabase_realtime add table messages;
+alter publication supabase_realtime add table game_state;
 ```
 
 > Jeśli przy sekcji REALTIME pojawi się błąd „table is already member of publication", zignoruj go
