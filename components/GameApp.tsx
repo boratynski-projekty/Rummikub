@@ -544,8 +544,8 @@ export default function GameApp({ userId }: { userId: string }) {
             {createVis === "private" && (
               <div className="field"><label>Zaproś znajomych</label>
                 {friends.length === 0 ? <div className="empty">Najpierw dodaj znajomych.</div> : friends.map((f) => (
-                  <label className="row" key={f.id} style={{ padding: "6px 0" }}>
-                    <input type="checkbox" style={{ width: "auto" }} checked={invited.has(f.id)} onChange={(e) => { const n = new Set(invited); e.target.checked ? n.add(f.id) : n.delete(f.id); setInvited(n); }} />
+                  <label className="pick" key={f.id}>
+                    <input type="checkbox" checked={invited.has(f.id)} onChange={(e) => { const n = new Set(invited); e.target.checked ? n.add(f.id) : n.delete(f.id); setInvited(n); }} />
                     <span>{f.nick} <span className="sub">({f.code})</span></span>
                   </label>
                 ))}

@@ -96,6 +96,12 @@ input:focus,select:focus{border-color:var(--pomaranczowy);}
 .msg .who{font-size:10px;color:var(--pomaranczowy);font-weight:700;margin-bottom:2px;}
 .msg.mine{align-self:flex-end;background:var(--blekitny);}.msg.mine .who{color:#dff;}
 .chatform{display:flex;gap:8px;}
+.pick{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);margin-bottom:8px;cursor:pointer;transition:.15s;user-select:none;}
+.pick:hover{border-color:#555;}
+.pick:has(input:checked){border-color:var(--pomaranczowy);background:rgba(240,138,36,.12);}
+.pick input{appearance:none;-webkit-appearance:none;width:22px;height:22px;border-radius:6px;border:2px solid var(--line);background:var(--panel);display:grid;place-items:center;cursor:pointer;flex:0 0 auto;transition:.15s;margin:0;}
+.pick input:checked{background:var(--pomaranczowy);border-color:var(--pomaranczowy);}
+.pick input:checked::after{content:"✓";color:#000;font-weight:900;font-size:14px;line-height:1;}
 .install{position:fixed;left:12px;right:12px;bottom:12px;background:var(--panel);border:1px solid var(--pomaranczowy);border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:12px;z-index:2500;box-shadow:0 8px 30px rgba(0,0,0,.5);}
 .install .ic{width:42px;height:42px;border-radius:10px;flex:0 0 auto;}
 @keyframes wiggle{0%,100%{transform:rotate(0);}25%{transform:rotate(-9deg);}75%{transform:rotate(9deg);}}
