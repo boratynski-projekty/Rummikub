@@ -80,6 +80,7 @@ input:focus,select:focus{border-color:var(--pomaranczowy);}
 .rackbar{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;}
 .you{font-weight:700;font-size:13px;}.you.off{opacity:.5;}
 .tray{display:flex;gap:4px;flex-wrap:wrap;background:#2a2a2a;border:1px solid #3a3a3a;border-radius:10px;padding:8px;min-height:64px;align-items:center;}
+.entrybar{display:flex;align-items:center;gap:10px;background:rgba(240,138,36,.12);border:1px solid var(--pomaranczowy);border-radius:10px;padding:9px 12px;margin-bottom:8px;}
 .tile{width:42px;height:56px;background:linear-gradient(160deg,var(--kosc),var(--kosc-cien));border-radius:7px;display:grid;place-items:center;font-weight:800;font-size:22px;cursor:grab;box-shadow:0 2px 0 rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.6);user-select:none;touch-action:none;flex:0 0 auto;transition:transform .12s;}
 .tile.dragging{opacity:.35;transform:scale(.95);}
 .tile.c-pomaranczowy{color:var(--pomaranczowy);}.tile.c-czerwony{color:var(--czerwony);}.tile.c-blekitny{color:var(--blekitny);}.tile.c-czarny{color:var(--czarny);}

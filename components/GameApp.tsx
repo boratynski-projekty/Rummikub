@@ -42,6 +42,7 @@ export default function GameApp({ userId }: { userId: string }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [atTableOpen, setAtTableOpen] = useState(false);
   const [endBanner, setEndBanner] = useState<{ won: boolean } | null>(null);
+  const [entryInfo, setEntryInfo] = useState<{ points: number; canClear: boolean; complete: boolean } | null>(null);
   const [installVisible, setInstallVisible] = useState(false);
   const [installHint, setInstallHint] = useState("Dodaj na ekran główny telefonu");
   const deferredPrompt = useRef<any>(null);
@@ -265,6 +266,7 @@ export default function GameApp({ userId }: { userId: string }) {
   const players = useRef<any[]>([]);
   const turn = useRef(0);
   const playedThisTurn = useRef(false);
+  const entered = useRef(false); // czy gracz „wszedł do gry" (pierwszy układ min. 30 pkt)
   const roundTime = useRef<number | null>(null);
   const timerInt = useRef<any>(null);
   const tileId = useRef(0);
@@ -276,7 +278,7 @@ export default function GameApp({ userId }: { userId: string }) {
   function startGame() {
     const r = roomRef.current!; const uid = meRef.current!.id;
     players.current = [{ nick: meRef.current!.nick, me: true, profile: meRef.current }, ...r.seats.filter((s) => !s.me).map((s) => ({ nick: s.nick, profile: s, tiles: 14 }))];
-    turn.current = 0; playedThisTurn.current = false; setView("game");
+    turn.current = 0; playedThisTurn.current = false; entered.current = false; setEntryInfo(null); setView("game");
     requestAnimationFrame(() => { setupBoard(); setupTimer(r.table.time_mode); syncTurnUI(); });
   }
   function tray() { return el("tray"); }
@@ -290,7 +292,7 @@ export default function GameApp({ userId }: { userId: string }) {
     tray().innerHTML = ""; melds().innerHTML = "";
     const hand: [number | null, string, string?][] = [[7, "czerwony"], [8, "czerwony"], [9, "czerwony"], [3, "blekitny"], [3, "czarny"], [3, "pomaranczowy"], [11, "czarny"], [12, "czarny"], [5, "pomaranczowy"], [10, "blekitny"], [1, "czerwony"], [6, "czarny"], [null, "czerwony", "j"], [13, "blekitny"]];
     hand.forEach((h) => tray().appendChild(mkTile(h[0], h[1], !!h[2])));
-    ([[[4, "blekitny"], [5, "blekitny"], [6, "blekitny"]], [[9, "pomaranczowy"], [9, "czerwony"], [9, "czarny"]]] as [number, string][][]).forEach((m) => { const e = newMeld(); m.forEach((t) => e.appendChild(mkTile(t[0], t[1]))); });
+    // nowy stół zaczyna PUSTY — gracze sami wykładają układy
     tidy();
   }
   function tidy() { melds().querySelectorAll(".meld").forEach((m) => { if (!m.querySelector(".tile")) m.remove(); }); el("hint").style.display = melds().querySelector(".meld") ? "none" : "grid"; const c = el("count"); if (c) c.textContent = String(tray().children.length); }
@@ -321,7 +323,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const loc = locate(e.clientX, e.clientY); const d = drag.current!; d.classList.remove("dragging"); const c = caret.current!; if (c.parentNode) c.remove();
     if (loc) { let cont: any = loc.cont; if (cont === "NEW") cont = newMeld(); if (loc.before && loc.before !== c) cont.insertBefore(d, loc.before); else cont.appendChild(d);
       if (cont.classList && cont.classList.contains("meld")) { if (!validMeld(tilesOf(cont))) { cont.classList.add("bad"); const ref = cont; setTimeout(() => ref.classList.remove("bad"), 350); tray().appendChild(d); } else if (fromMeld.current !== cont) playedThisTurn.current = true; } }
-    tidy(); syncTurnUI(); if (tray().children.length === 0) endGame(true);
+    tidy(); syncTurnUI(); if (tray().children.length === 0 && entered.current && boardState().complete) endGame(true);
     ghost.current?.remove(); ghost.current = null; drag.current = null; caret.current = null; fromMeld.current = null;
   }
   function renderOpps() {
@@ -331,11 +333,41 @@ export default function GameApp({ userId }: { userId: string }) {
       return `<div class="opp ${isTurn ? "turn" : ""}"><div class="avatar" style="width:34px;height:34px;background:${AVCOL[COLORS[(p.code ? p.code.charCodeAt(3) : i) % 4]]}">${av}<span class="dot ${p.status || "on"}"></span></div><div class="meta"><div class="nick">${esc(o.nick)}</div><div class="tiles">${o.tiles} klocków</div></div>${isTurn ? `<button class="skip" data-skip="${idx}">Pomiń</button>` : ""}</div>`; }).join("");
     box.querySelectorAll("[data-skip]").forEach((b) => ((b as HTMLElement).onclick = () => nextTurn()));
   }
+  function meldPoints(arr: { n: number | null; c: string; joker: boolean }[]) {
+    const real = arr.filter((t) => !t.joker); if (!real.length) return 0;
+    const sameVal = real.every((t) => t.n === real[0].n);
+    if (sameVal) return arr.length * (real[0].n as number); // grupa: każdy klocek = wartość (joker też)
+    let prev: number | null = null, sum = 0;
+    for (const t of arr) { if (t.joker) { if (prev != null) { prev++; sum += prev; } } else { sum += t.n as number; prev = t.n; } }
+    return sum;
+  }
+  function boardState() {
+    const ms = [...melds().querySelectorAll(".meld")];
+    const tiles = ms.reduce((n, m) => n + m.querySelectorAll(".tile").length, 0);
+    const complete = ms.length > 0 && ms.every((m) => { const a = tilesOf(m); return a.length >= 3 && validMeld(a); });
+    const points = ms.reduce((s, m) => s + meldPoints(tilesOf(m)), 0);
+    return { tiles, complete, points, count: ms.length };
+  }
   function syncTurnUI() {
     const my = turn.current === 0; const yl = el("youlabel"); if (!yl) return;
     yl.classList.toggle("off", !my); yl.innerHTML = (my ? "Twoja kolej" : "Czekaj na swój ruch") + ' · <span id="count">' + tray().children.length + "</span> klocków";
-    (el("draw") as HTMLButtonElement).disabled = !my; (el("sort") as HTMLButtonElement).disabled = false; (el("endturn") as HTMLButtonElement).disabled = !my || !playedThisTurn.current;
+    (el("draw") as HTMLButtonElement).disabled = !my; (el("sort") as HTMLButtonElement).disabled = false;
+    const b = boardState();
+    let canEnd = my && playedThisTurn.current && b.complete;
+    if (my && !entered.current) canEnd = canEnd && b.points >= 30;
+    (el("endturn") as HTMLButtonElement).disabled = !canEnd;
+    setEntryInfo(my && !entered.current ? { points: b.points, canClear: b.tiles > 0, complete: b.complete } : null);
     renderOpps(); resetRoundTimer();
+  }
+  function attemptEndTurn() {
+    const b = boardState();
+    if (b.count === 0 || !b.complete) { toast("Każdy układ musi mieć min. 3 klocki i być poprawny"); return; }
+    if (!entered.current) { if (b.points < 30) { toast(`Aby wejść do gry potrzebujesz min. 30 pkt (masz ${b.points})`); return; } entered.current = true; }
+    nextTurn();
+  }
+  function clearTilesToRack() {
+    melds().querySelectorAll<HTMLElement>(".meld .tile").forEach((t) => tray().appendChild(t));
+    playedThisTurn.current = false; tidy(); syncTurnUI(); toast("Klocki wróciły na tabliczkę");
   }
   function nextTurn() { turn.current = (turn.current + 1) % players.current.length; playedThisTurn.current = false; syncTurnUI(); }
   function setupTimer(mode: string) { stopTimer(); const tEl = el("timer"); if (mode === "none") { roundTime.current = null; tEl.textContent = "⏱ bez limitu"; tEl.classList.remove("low"); return; } roundTime.current = +mode; let s = roundTime.current; const tick = () => { tEl.textContent = "⏱ 0:" + String(s).padStart(2, "0"); tEl.classList.toggle("low", s <= 10); if (s <= 0) { nextTurn(); return; } s--; }; tick(); timerInt.current = setInterval(tick, 1000); (tEl as any)._reset = () => { s = roundTime.current!; }; }
@@ -509,8 +541,21 @@ export default function GameApp({ userId }: { userId: string }) {
               <div className="row" style={{ gap: 8 }}><Avatar p={me} size={32} /><div className="you" id="youlabel">Twoja kolej · <span id="count">0</span> klocków</div></div>
               <button className="btn ghost" id="sort" style={{ padding: "8px 12px" }} onClick={doSort}>Sortuj</button>
               <button className="btn" id="draw" style={{ padding: "8px 12px" }} onClick={doDraw}>Dobierz</button>
-              <button className="btn blue" id="endturn" style={{ padding: "8px 12px", marginLeft: "auto" }} onClick={nextTurn}>Zakończ turę</button>
+              <button className="btn blue" id="endturn" style={{ padding: "8px 12px", marginLeft: "auto" }} onClick={attemptEndTurn}>Zakończ turę</button>
             </div>
+            {entryInfo && (
+              <div className="entrybar">
+                <div className="grow">
+                  <div style={{ fontWeight: 800, fontSize: 13 }}>⚠ Jeszcze nie wszedłeś do gry</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                    Wyłóż układy na sumę min. <b>30 pkt</b> (np. 3×9 lub 1-2-3 jednego koloru), potem „Zakończ turę".
+                    {" "}Masz teraz: <b style={{ color: entryInfo.points >= 30 && entryInfo.complete ? "#39d353" : "var(--pomaranczowy)" }}>{entryInfo.points} pkt</b>
+                    {!entryInfo.complete && entryInfo.canClear ? " (dokończ układy: min. 3 klocki)" : ""}
+                  </div>
+                </div>
+                <button className="btn ghost" disabled={!entryInfo.canClear} onClick={clearTilesToRack} style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>Sprzątnij klocki</button>
+              </div>
+            )}
             <div className="tray" id="tray" />
           </div>
         </div>
