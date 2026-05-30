@@ -93,16 +93,19 @@ input:focus,select:focus{border-color:var(--pomaranczowy);}
 .badge{position:absolute;top:-7px;right:-7px;min-width:19px;height:19px;padding:0 4px;border-radius:10px;background:var(--czerwony);color:#fff;font-size:11px;font-weight:800;display:grid;place-items:center;border:2px solid #000;}
 .chatcard{display:flex;flex-direction:column;height:min(80dvh,560px);width:min(94vw,460px);}
 .chatlog{flex:1;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px 2px;margin:10px 0;}
-.msg{max-width:80%;padding:8px 11px;border-radius:12px;background:var(--panel2);font-size:14px;word-break:break-word;}
+.msgrow{display:flex;gap:8px;align-items:flex-end;max-width:88%;}
+.msgrow.mine{align-self:flex-end;flex-direction:row-reverse;}
+.msgrow .avatar{margin-bottom:2px;}
+.msg{padding:8px 11px;border-radius:12px;background:var(--panel2);font-size:14px;word-break:break-word;}
 .msg .who{font-size:10px;color:var(--pomaranczowy);font-weight:700;margin-bottom:2px;}
-.msg.mine{align-self:flex-end;background:var(--blekitny);}.msg.mine .who{color:#dff;}
+.msg.mine{background:var(--blekitny);}.msg.mine .who{color:#dff;}
 .chatform{display:flex;gap:8px;}
-.pick{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);margin-bottom:8px;cursor:pointer;transition:.15s;user-select:none;}
-.pick:hover{border-color:#555;}
-.pick:has(input:checked){border-color:var(--pomaranczowy);background:rgba(240,138,36,.12);}
-.pick input{appearance:none;-webkit-appearance:none;width:22px;height:22px;border-radius:6px;border:2px solid var(--line);background:var(--panel);display:grid;place-items:center;cursor:pointer;flex:0 0 auto;transition:.15s;margin:0;}
+.pick{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:11px;background:var(--panel2);border:1.5px solid var(--line);margin-bottom:8px;cursor:pointer;transition:.15s;user-select:none;font-size:14px;}
+.pick:hover{border-color:#5a5a5a;}
+.pick:has(input:checked){border-color:var(--pomaranczowy);background:rgba(240,138,36,.14);}
+.pick input{appearance:none;-webkit-appearance:none;width:24px;height:24px;border-radius:7px;border:2px solid #5a5a5a;background:transparent;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto;transition:.15s;margin:0;}
 .pick input:checked{background:var(--pomaranczowy);border-color:var(--pomaranczowy);}
-.pick input:checked::after{content:"✓";color:#000;font-weight:900;font-size:14px;line-height:1;}
+.pick input:checked::after{content:"";width:6px;height:11px;border:solid #000;border-width:0 3px 3px 0;transform:rotate(45deg) translateY(-1px);}
 .install{position:fixed;left:12px;right:12px;bottom:12px;background:var(--panel);border:1px solid var(--pomaranczowy);border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:12px;z-index:2500;box-shadow:0 8px 30px rgba(0,0,0,.5);}
 .install .ic{width:42px;height:42px;border-radius:10px;flex:0 0 auto;}
 @keyframes wiggle{0%,100%{transform:rotate(0);}25%{transform:rotate(-9deg);}75%{transform:rotate(9deg);}}

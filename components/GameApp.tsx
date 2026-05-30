@@ -411,6 +411,13 @@ export default function GameApp({ userId }: { userId: string }) {
     );
   };
 
+  const profileById = (id: string): Partial<Profile> => {
+    if (me && id === me.id) return me;
+    const s = room?.seats.find((x) => x.id === id); if (s) return s;
+    const f = friends.find((x) => x.id === id); if (f) return f;
+    return {};
+  };
+
   if (view === "loading") return <div className="view login-bg"><div className="logo" style={{ fontSize: 22 }}><span>RUM</span><span>MI</span><span>KUB</span></div></div>;
 
   const statusLabels: Record<string, string> = { on: "🟢 online", inv: "🟡 niewidoczny", off: "⚪ offline" };
@@ -517,8 +524,17 @@ export default function GameApp({ userId }: { userId: string }) {
               </div>
             )}
             <div className="sec">
-              <button className={"btn" + (room.seats.find((s) => s.me)?.ready ? " blue" : "")} style={{ width: "100%" }} onClick={toggleReady}>{room.seats.find((s) => s.me)?.ready ? "✓ Jesteś gotowy (anuluj)" : "Gotowy do startu"}</button>
-              <p className="empty" style={{ textAlign: "center" }}>Gra ruszy, gdy wszyscy będą gotowi.</p>
+              {room.table.status === "playing" ? (
+                <>
+                  <button className="btn" style={{ width: "100%" }} onClick={startGame}>▶ Wróć do gry</button>
+                  <p className="empty" style={{ textAlign: "center" }}>Gra jest w toku — możesz wrócić do stołu.</p>
+                </>
+              ) : (
+                <>
+                  <button className={"btn" + (room.seats.find((s) => s.me)?.ready ? " blue" : "")} style={{ width: "100%" }} onClick={toggleReady}>{room.seats.find((s) => s.me)?.ready ? "✓ Jesteś gotowy (anuluj)" : "Gotowy do startu"}</button>
+                  <p className="empty" style={{ textAlign: "center" }}>Gra ruszy, gdy wszyscy będą gotowi.</p>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -567,7 +583,16 @@ export default function GameApp({ userId }: { userId: string }) {
           <div className="card chatcard">
             <div className="row"><h3 className="logo" style={{ margin: 0 }}>💬 Czat stołu</h3><button className="leave" style={{ marginLeft: "auto" }} onClick={closeChat}>Zamknij</button></div>
             <div className="chatlog" id="chatlog">
-              {chatMsgs.map((m) => <div key={m.id} className={"msg" + (m.user_id === uid ? " mine" : "")}><div className="who">{m.nick}</div>{m.body}</div>)}
+              {chatMsgs.map((m) => {
+                const mineMsg = m.user_id === uid;
+                const p = { ...profileById(m.user_id), nick: m.nick } as Partial<Profile>;
+                return (
+                  <div key={m.id} className={"msgrow" + (mineMsg ? " mine" : "")}>
+                    <Avatar p={p} size={26} />
+                    <div className={"msg" + (mineMsg ? " mine" : "")}><div className="who">{m.nick}</div>{m.body}</div>
+                  </div>
+                );
+              })}
             </div>
             <form className="chatform" onSubmit={sendChat}><input className="grow" id="chatinput" placeholder="Napisz wiadomość…" maxLength={300} autoComplete="off" /><button className="btn" type="submit">Wyślij</button></form>
           </div>
