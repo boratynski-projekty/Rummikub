@@ -407,6 +407,7 @@ export default function GameApp({ userId }: { userId: string }) {
               <div className="row" style={{ flexWrap: "wrap", gap: 12 }}>
                 <label style={{ cursor: "pointer" }} title="Zmień avatar"><Avatar p={me} size={60} /><input type="file" accept="image/*" style={{ display: "none" }} onChange={onAvatar} /></label>
                 <div className="grow">
+                  <label style={{ display: "block", fontSize: 12, color: "var(--muted)", marginBottom: 5 }}>Twój nick — wpisz tutaj, aby go zmienić, i kliknij „Zapisz"</label>
                   <div className="row"><input className="grow" id="nickInput" maxLength={16} defaultValue={me.nick} placeholder="Twój nick" /><button className="btn" onClick={saveNick}>Zapisz</button></div>
                   <div className="row" style={{ marginTop: 10, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 12, color: "var(--muted)" }}>Twój kod:</span>
