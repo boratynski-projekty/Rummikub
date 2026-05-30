@@ -1,15 +1,35 @@
-# systemowe / edytor
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+
+# production
+/build
+
+# misc
 .DS_Store
 Thumbs.db
+*.pem
 .vscode/
 .idea/
 
-# zależności (gdyby pojawił się build)
-node_modules/
-dist/
-.vercel/
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# pliki lokalne / sekrety serwerowe (NIE commituj service_role!)
+# env (NIE commituj kluczy; na Vercelu ustaw przez Environment Variables)
 .env
 .env.local
-*.local
+.env*.local
+
+# vercel
+.vercel
+
+# stara wersja statyczna (referencyjna, nie wchodzi do builda Next)
+/legacy

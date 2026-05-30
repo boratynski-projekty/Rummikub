@@ -1,37 +1,62 @@
 # Rummikub Online
 
-Gra Rummikub do gry online ze znajomymi. Logowanie przez Google, znajomi, stoły publiczne/prywatne,
-czat na żywo, statystyki, PWA (instalacja na telefonie). Backend: **Supabase**. Hosting: **Vercel**.
+Gra Rummikub online ze znajomymi: logowanie Google, znajomi (z akceptacją), stoły publiczne/prywatne,
+poczekalnia ze startem gdy wszyscy gotowi, czat na żywo, statystyki, zmiana avatara, PWA (instalacja na telefonie).
 
 ## Stack
-- Front-end: jeden plik `index.html` (vanilla JS), `supabase-js` z CDN
-- Backend: Supabase (Auth Google, Postgres + RLS, Realtime, Storage na avatary)
-- PWA: `manifest.webmanifest`, `sw.js`, ikony
+- **Next.js 15** (App Router) + **TypeScript** + **Tailwind CSS**
+- **Supabase** jako backend: Auth (Google OAuth), Postgres + RLS, Realtime, Storage (bucket `avatars`)
+- PWA: `public/manifest.webmanifest`, `public/sw.js`, ikony
 
-## Uruchomienie lokalne
-Logowanie Google wymaga `http(s)://` (nie `file://`). Najprościej:
-
-```bash
-npx serve .
-# albo w VS Code: rozszerzenie "Live Server"
+## Struktura
+```
+app/                 # App Router
+  page.tsx           # redirect → /login lub /app wg sesji
+  login/page.tsx     # logowanie Google
+  auth/callback/     # wymiana kodu OAuth na sesję
+  app/page.tsx       # wymaga sesji → renderuje grę
+  layout.tsx, globals.css
+components/GameApp.tsx  # cała aplikacja kliencka (lobby, znajomi, stoły, poczekalnia, czat, gra)
+lib/supabase/        # klient przeglądarki, serwera i middleware (@supabase/ssr)
+middleware.ts        # odświeżanie sesji
+public/              # ikony, manifest, service worker
+legacy/              # poprzednia wersja statyczna (referencyjnie, poza buildem)
 ```
 
-Otwórz podany adres (np. http://localhost:3000).
+## Zmienne środowiskowe
+Skopiuj `.env.example` → `.env.local` i uzupełnij (Supabase → Project Settings → API):
+```
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+```
+Klucz `anon` jest publiczny i bezpieczny w kliencie (chroni go RLS). **Nigdy nie commituj `service_role`.**
 
-## Konfiguracja Supabase
-Pełna instrukcja: [`SETUP_SUPABASE.md`](./SETUP_SUPABASE.md) — schemat SQL, Google OAuth, bucket avatarów.
-Klucze (`Project URL` i `anon key`) są wpisane w `index.html` w bloku `CONFIG`. Klucz `anon` jest
-publiczny i bezpieczny w kodzie front-endu (dostęp chronią reguły RLS). **Nigdy nie commituj klucza `service_role`.**
+## Uruchomienie lokalne
+```bash
+npm install
+npm run dev
+# http://localhost:3000
+```
 
 ## Deploy na Vercel
-1. Wypchnij repo na GitHub.
-2. Vercel → **Add New → Project** → zaimportuj repo `Rummikub`.
-3. Framework Preset: **Other** (to statyczna strona, bez buildu). Root: `/`.
-4. Deploy. Dostaniesz adres `https://<projekt>.vercel.app`.
-5. Dodaj ten adres w trzech miejscach (patrz niżej w SETUP), żeby zadziałało logowanie Google na produkcji.
+1. `git push` na GitHub.
+2. Vercel → **Add New → Project** → import repo. Framework wykryje się jako **Next.js** (bez ręcznej konfiguracji buildu).
+3. W **Environment Variables** dodaj `NEXT_PUBLIC_SUPABASE_URL` i `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+4. Deploy → dostajesz `https://<projekt>.vercel.app`.
 
-## Pliki
-- `index.html` — cała aplikacja
-- `SETUP_SUPABASE.md` — konfiguracja backendu
-- `manifest.webmanifest`, `sw.js`, `icon*.png`, `icon.svg`, `apple-touch-icon.png` — PWA
-- `vercel.json` — nagłówki dla service workera i manifestu
+## Konfiguracja Supabase i Google OAuth
+Pełna instrukcja: [`SETUP_SUPABASE.md`](./SETUP_SUPABASE.md) (schemat SQL, RLS, bucket, Google OAuth).
+
+Ważne dla tej wersji Next.js — w **Supabase → Authentication → URL Configuration**:
+- **Site URL**: `https://<projekt>.vercel.app` (lub `http://localhost:3000` do testów)
+- **Redirect URLs**: dodaj `http://localhost:3000/**` oraz `https://<projekt>.vercel.app/**`
+  (gwiazdki obejmują ścieżkę `/auth/callback`, której używa aplikacja)
+
+W **Google Cloud → Credentials** redirect URI pozostaje bez zmian:
+`https://sdquyipqyednphkokbxw.supabase.co/auth/v1/callback`, a w **Authorized JavaScript origins**
+dodaj `http://localhost:3000` i adres Vercela.
+
+## Status / dalsze kroki
+Rozgrywka (klocki) jest na razie lokalna u każdego gracza, z walidacją po stronie klienta.
+Pełna synchronizacja ruchów i autorytatywny serwer (anty-cheat) to naturalny następny etap —
+najlepiej przez Supabase Realtime (broadcast stanu stołu) + Edge Functions do walidacji.
