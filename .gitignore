@@ -1,0 +1,15 @@
+# systemowe / edytor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# zależności (gdyby pojawił się build)
+node_modules/
+dist/
+.vercel/
+
+# pliki lokalne / sekrety serwerowe (NIE commituj service_role!)
+.env
+.env.local
+*.local

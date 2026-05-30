@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Rummikub — prototyp</title>
+<style>
+  :root{
+    --pomaranczowy:#f08a24;--czerwony:#d8232a;--blekitny:#1ba0d7;--czarny:#1a1a1a;
+    --felt:#0e6b3f;--felt-d:#0a5532;--kosc:#f5efe1;--kosc-cien:#d9d0bb;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:var(--czarny);color:#fff;overscroll-behavior:none;}
+  #app{display:flex;flex-direction:column;height:100%;}
+
+  header{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#000;border-bottom:2px solid var(--pomaranczowy);}
+  .logo{font-weight:800;font-size:18px;letter-spacing:.5px;}
+  .logo span:nth-child(1){color:var(--pomaranczowy);}
+  .logo span:nth-child(2){color:var(--czerwony);}
+  .logo span:nth-child(3){color:var(--blekitny);}
+  .timer{margin-left:auto;background:#222;border:1px solid #333;border-radius:20px;padding:4px 12px;font-variant-numeric:tabular-nums;font-weight:700;}
+  .timer.low{color:var(--czerwony);border-color:var(--czerwony);}
+
+  .opponents{display:flex;gap:8px;padding:10px 12px;overflow-x:auto;background:var(--felt-d);}
+  .opp{flex:0 0 auto;display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.25);
+    border:2px solid transparent;border-radius:12px;padding:6px 10px;min-width:150px;transition:.2s;}
+  .opp.turn{border-color:var(--pomaranczowy);box-shadow:0 0 0 2px rgba(240,138,36,.3);}
+  .avatar{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:800;color:#fff;flex:0 0 auto;position:relative;}
+  .dot{position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border-radius:50%;border:2px solid var(--felt-d);}
+  .on{background:#39d353;} .off{background:#777;} .inv{background:#caa84a;}
+  .opp .meta{line-height:1.2;min-width:0;flex:1;}
+  .opp .nick{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .opp .tiles{font-size:11px;color:#cfe;opacity:.9;}
+  .skip{background:var(--czerwony);color:#fff;border:none;border-radius:7px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;}
+
+  .table{flex:1;background:var(--felt);background-image:radial-gradient(ellipse at center,var(--felt) 0%,var(--felt-d) 100%);
+    padding:10px;overflow:auto;position:relative;}
+  .hint{position:absolute;inset:0;display:grid;place-items:center;color:rgba(255,255,255,.25);font-size:15px;pointer-events:none;text-align:center;padding:20px;}
+  .melds{display:flex;flex-wrap:wrap;gap:14px;align-content:flex-start;min-height:100%;}
+  .meld{display:flex;gap:3px;padding:6px;border-radius:10px;background:rgba(0,0,0,.12);min-height:62px;min-width:54px;align-items:center;transition:background .15s;}
+  .meld.bad{background:rgba(216,35,42,.35);outline:2px solid var(--czerwony);}
+
+  .rack{background:var(--czarny);border-top:3px solid var(--pomaranczowy);padding:8px;}
+  .rackbar{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;}
+  .me{display:flex;align-items:center;gap:8px;}
+  .you{font-weight:700;font-size:13px;}
+  .you.off{opacity:.5;}
+  .btn{background:var(--pomaranczowy);color:#000;border:none;border-radius:8px;padding:8px 14px;font-weight:800;font-size:13px;cursor:pointer;}
+  .btn.ghost{background:transparent;color:#fff;border:1px solid #444;}
+  .btn.end{background:var(--blekitny);color:#fff;margin-left:auto;}
+  .btn:disabled{opacity:.35;cursor:not-allowed;}
+  .tray{display:flex;gap:4px;flex-wrap:wrap;background:#2a2a2a;border:1px solid #3a3a3a;border-radius:10px;padding:8px;min-height:64px;align-items:center;}
+
+  .tile{width:42px;height:56px;background:linear-gradient(160deg,var(--kosc),var(--kosc-cien));
+    border-radius:7px;display:grid;place-items:center;font-weight:800;font-size:22px;cursor:grab;
+    box-shadow:0 2px 0 rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.6);user-select:none;
+    touch-action:none;flex:0 0 auto;transition:transform .12s;}
+  .tile:active{cursor:grabbing;}
+  .tile.dragging{opacity:.35;transform:scale(.95);}
+  .tile.c-pomaranczowy{color:var(--pomaranczowy);}
+  .tile.c-czerwony{color:var(--czerwony);}
+  .tile.c-blekitny{color:var(--blekitny);}
+  .tile.c-czarny{color:var(--czarny);}
+  .tile.joker{color:var(--czerwony);font-size:18px;}
+  .ghosttile{position:fixed;pointer-events:none;z-index:999;transform:translate(-50%,-50%) rotate(-4deg);opacity:.92;}
+
+  /* wskaźnik miejsca wstawienia */
+  .caret{width:4px;align-self:stretch;min-height:48px;border-radius:3px;background:var(--pomaranczowy);
+    box-shadow:0 0 8px var(--pomaranczowy);animation:pulse .8s ease-in-out infinite;flex:0 0 auto;}
+  @keyframes pulse{0%,100%{opacity:.5;transform:scaleY(.85);}50%{opacity:1;transform:scaleY(1);}}
+
+  @media (min-width:760px){
+    .tile{width:48px;height:64px;font-size:25px;}
+    .opp{min-width:185px;}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo"><span>RUM</span><span>MI</span><span>KUB</span></div>
+    <div class="timer" id="timer">⏱ 0:45</div>
+  </header>
+
+  <div class="opponents" id="opponents"></div>
+
+  <div class="table">
+    <div class="hint" id="hint">Przeciągnij klocki z tabliczki tutaj, aby ułożyć serie i grupy</div>
+    <div class="melds" id="melds"></div>
+  </div>
+
+  <div class="rack">
+    <div class="rackbar">
+      <div class="me">
+        <div class="avatar" style="background:var(--blekitny)">TY</div>
+        <div class="you" id="youlabel">Twoja kolej · <span id="count">14</span> klocków</div>
+      </div>
+      <button class="btn ghost" id="sort">Sortuj</button>
+      <button class="btn" id="draw">Dobierz</button>
+      <button class="btn end" id="endturn">Zakończ turę</button>
+    </div>
+    <div class="tray" id="tray"></div>
+  </div>
+</div>
+
+<script>
+const COLORS=["pomaranczowy","czerwony","blekitny","czarny"];
+
+/* ---------- GRACZE / TURY ---------- */
+// indeks 0 = TY, reszta = przeciwnicy
+const players=[
+  {nick:"Ty",me:true},
+  {nick:"Kasia",tiles:11,status:"on",c:"var(--czerwony)"},
+  {nick:"Marek_92",tiles:7,status:"inv",c:"var(--pomaranczowy)"},
+  {nick:"Ola",tiles:13,status:"off",c:"var(--czarny)"},
+];
+let turn=0; // czyja kolej
+let playedThisTurn=false; // czy w tej turze położono klocek na stole
+
+function renderOpps(){
+  document.getElementById('opponents').innerHTML=players.slice(1).map((o,i)=>{
+    const idx=i+1, isTurn=turn===idx;
+    return `<div class="opp ${isTurn?'turn':''}">
+      <div class="avatar" style="background:${o.c}">${o.nick.slice(0,2).toUpperCase()}
+        <span class="dot ${o.status}"></span></div>
+      <div class="meta"><div class="nick">${o.nick}</div>
+        <div class="tiles">${o.tiles} klocków${isTurn?' · gra…':''}</div></div>
+      ${isTurn?`<button class="skip" data-skip="${idx}">Pomiń</button>`:''}
+    </div>`;}).join('');
+  document.querySelectorAll('[data-skip]').forEach(b=>b.onclick=()=>nextTurn());
+}
+
+function syncTurnUI(){
+  const my=turn===0;
+  document.getElementById('youlabel').classList.toggle('off',!my);
+  document.getElementById('youlabel').innerHTML=
+    (my?'Twoja kolej':'Czeka: '+players[turn].nick)+' · <span id="count">'+tray.children.length+'</span> klocków';
+  document.getElementById('draw').disabled=!my;
+  // Sortowanie i przekładanie własnej tabliczki dozwolone zawsze
+  document.getElementById('sort').disabled=false;
+  // Zakończyć turę można tylko po wykonaniu ruchu (alternatywą jest "Dobierz")
+  document.getElementById('endturn').disabled=!my||!playedThisTurn;
+  renderOpps();
+}
+function nextTurn(){turn=(turn+1)%players.length;playedThisTurn=false;syncTurnUI();}
+
+/* ---------- KLOCKI ---------- */
+let id=0;
+function mkTile(n,c,joker){const d=document.createElement('div');
+  d.className='tile c-'+c+(joker?' joker':'');d.dataset.id=++id;
+  d.textContent=joker?'★':n;d.dataset.n=n??'';d.dataset.c=c;d.dataset.joker=joker?'1':'';
+  attachDrag(d);return d;}
+
+const tray=document.getElementById('tray');
+const melds=document.getElementById('melds');
+const hint=document.getElementById('hint');
+
+const hand=[[7,'czerwony'],[8,'czerwony'],[9,'czerwony'],[3,'blekitny'],[3,'czarny'],
+  [3,'pomaranczowy'],[11,'czarny'],[12,'czarny'],[5,'pomaranczowy'],[10,'blekitny'],
+  [1,'czerwony'],[6,'czarny'],[null,'czerwony','j'],[13,'blekitny']];
+hand.forEach(h=>tray.appendChild(mkTile(h[0],h[1],h[2])));
+
+[[[4,'blekitny'],[5,'blekitny'],[6,'blekitny']],
+ [[9,'pomaranczowy'],[9,'czerwony'],[9,'czarny']]].forEach(m=>{
+  const el=newMeld();m.forEach(t=>el.appendChild(mkTile(t[0],t[1])));
+});
+
+function newMeld(){const el=document.createElement('div');el.className='meld';melds.appendChild(el);return el;}
+function tidy(){melds.querySelectorAll('.meld').forEach(m=>{if(!m.querySelector('.tile'))m.remove();});
+  hint.style.display=melds.querySelector('.meld')?'none':'grid';
+  const c=document.getElementById('count');if(c)c.textContent=tray.children.length;}
+tidy();
+
+/* ---------- WALIDACJA UKŁADÓW ---------- */
+// zwraca true jeśli układ klocków jest poprawną serią, grupą lub jest w budowie (<=1)
+function tilesOf(meld){return [...meld.querySelectorAll('.tile')].map(t=>({
+  n:t.dataset.n?+t.dataset.n:null,c:t.dataset.c,joker:t.dataset.joker==='1'}));}
+function validMeld(arr){
+  if(arr.length<=1)return true;
+  const real=arr.filter(t=>!t.joker);
+  if(real.length===0)return true;
+  const sameVal=real.every(t=>t.n===real[0].n);
+  // GRUPA: ta sama wartość, różne kolory, max 4
+  if(sameVal){
+    const cols=real.map(t=>t.c);
+    if(new Set(cols).size!==cols.length)return false; // powtórzony kolor
+    return arr.length<=4;
+  }
+  // SERIA: ten sam kolor, kolejne wartości bez luk wg ułożenia (jokery wypełniają)
+  if(!real.every(t=>t.c===real[0].c))return false;
+  let prev=null;
+  for(const t of arr){
+    if(t.joker){if(prev!==null)prev++;continue;}
+    if(prev!==null && t.n!==prev+1)return false; // luka lub zła kolejność
+    prev=t.n;
+  }
+  return arr.length<=13 && arr.every(t=>t.joker||(t.n>=1&&t.n<=13));
+}
+
+/* ---------- DRAG & DROP z wstawianiem ---------- */
+let drag=null,ghost=null,caret=null,fromMeld=null;
+const mkCaret=()=>{const c=document.createElement('div');c.className='caret';return c;};
+
+function attachDrag(tile){
+  tile.addEventListener('pointerdown',e=>{
+    // poza swoją turą można ruszać tylko klockami na własnej tabliczce
+    if(turn!==0 && !tile.closest('.tray'))return;
+    e.preventDefault();
+    drag=tile;fromMeld=tile.closest('.meld');
+    tile.classList.add('dragging');
+    ghost=tile.cloneNode(true);ghost.classList.add('ghosttile');ghost.classList.remove('dragging');
+    document.body.appendChild(ghost);
+    caret=mkCaret();
+    tile.setPointerCapture(e.pointerId);
+    moveGhost(e);
+  });
+  tile.addEventListener('pointermove',e=>{if(drag)moveGhost(e);});
+  tile.addEventListener('pointerup',e=>{if(drag)drop(e);});
+  tile.addEventListener('pointercancel',e=>{if(drag)drop(e);});
+}
+
+// znajdź kontener i pozycję wstawienia na podstawie X kursora
+function locate(x,y){
+  const el=document.elementFromPoint(x,y);if(!el)return null;
+  let cont=el.closest('.tray')?tray:null;
+  if(turn!==0)return cont?{cont,before:beforeIn(cont,x)}:null; // poza turą tylko tabliczka
+  if(!cont){const m=el.closest('.meld');if(m)cont=m;}
+  if(!cont && el.closest('.table'))cont='NEW'; // pusty obszar stołu => nowy układ
+  if(!cont)return null;
+  if(cont==='NEW')return {cont:'NEW',before:null};
+  return {cont,before:beforeIn(cont,x)};
+}
+// przed którym klockiem wstawić (wg środka, X kursora)
+function beforeIn(cont,x){
+  const tiles=[...cont.querySelectorAll('.tile')].filter(t=>t!==drag);
+  for(const t of tiles){const r=t.getBoundingClientRect();
+    if(x < r.left+r.width/2)return t;}
+  return null;
+}
+
+function moveGhost(e){
+  ghost.style.left=e.clientX+'px';ghost.style.top=e.clientY+'px';
+  const loc=locate(e.clientX,e.clientY);
+  if(caret.parentNode)caret.remove();
+  if(loc && loc.cont!=='NEW'){
+    if(loc.before)loc.cont.insertBefore(caret,loc.before);
+    else loc.cont.appendChild(caret);
+  }
+}
+
+function drop(e){
+  const loc=locate(e.clientX,e.clientY);
+  drag.classList.remove('dragging');
+  if(caret.parentNode)caret.remove();
+
+  if(loc){
+    let cont=loc.cont;
+    if(cont==='NEW')cont=newMeld();
+    if(loc.before&&loc.before!==caret)cont.insertBefore(drag,loc.before);
+    else cont.appendChild(drag);
+
+    // walidacja jeśli to układ na stole
+    if(cont.classList&&cont.classList.contains('meld')){
+      if(!validMeld(tilesOf(cont))){
+        // odrzuć: cofnij na tabliczkę i mignij na czerwono
+        cont.classList.add('bad');
+        const ref=cont; setTimeout(()=>ref.classList.remove('bad'),350);
+        tray.appendChild(drag);
+      }else if(fromMeld!==cont){
+        playedThisTurn=true; // wykonano ruch na stole
+      }
+    }
+  }
+  tidy();
+  syncTurnUI();
+  ghost.remove();ghost=null;drag=null;caret=null;fromMeld=null;
+}
+
+/* ---------- PRZYCISKI ---------- */
+document.getElementById('sort').onclick=()=>{
+  const ts=[...tray.children].filter(t=>t.classList.contains('tile')).sort((a,b)=>
+    COLORS.indexOf(a.dataset.c)-COLORS.indexOf(b.dataset.c)||(a.dataset.n-b.dataset.n));
+  ts.forEach(t=>tray.appendChild(t));
+};
+document.getElementById('draw').onclick=()=>{
+  const n=1+Math.floor(Math.random()*13),c=COLORS[Math.floor(Math.random()*4)];
+  tray.appendChild(mkTile(n,c));tidy();nextTurn();   // dobranie kończy turę
+};
+document.getElementById('endturn').onclick=()=>nextTurn();
+
+/* ---------- TIMER ---------- */
+let s=45;const tEl=document.getElementById('timer');
+setInterval(()=>{s=s<=0?45:s-1;const m=Math.floor(s/60);
+  tEl.textContent='⏱ '+m+':'+String(s%60).padStart(2,'0');
+  tEl.classList.toggle('low',s<=10);},1000);
+
+syncTurnUI();
+</script>
+</body>
+</html>
