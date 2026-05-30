@@ -278,6 +278,7 @@ export default function GameApp({ userId }: { userId: string }) {
   const gameCh = useRef<any>(null);
   const curTurnUid = useRef<string | null>(null);
   const endedFor = useRef<string | null>(null);
+  const rackLoaded = useRef(false); // tabliczkę ładujemy z bazy tylko raz (zachowujemy ułożenie gracza)
 
   function buildDeck() {
     const deck: any[] = [];
@@ -287,7 +288,7 @@ export default function GameApp({ userId }: { userId: string }) {
     return deck;
   }
   async function startGame() {
-    const r = roomRef.current!; setView("game"); playedThisTurn.current = false; endedFor.current = null; setEntryInfo(null);
+    const r = roomRef.current!; setView("game"); playedThisTurn.current = false; endedFor.current = null; rackLoaded.current = false; setEntryInfo(null);
     let { data: gs } = await supabase.from("game_state").select("*").eq("table_id", r.table.id).maybeSingle();
     if (!gs && r.iAmOwner) {
       const order = r.seats.map((s) => s.id);
@@ -322,7 +323,8 @@ export default function GameApp({ userId }: { userId: string }) {
       const seat = roomRef.current?.seats.find((x) => x.id === uid);
       players.current.push({ uid, nick: seat?.nick || "Gracz", profile: seat || {}, tiles: (s.hands?.[uid] || []).length, isTurn: s.turn === uid });
     });
-    buildBoard(s.board || []); buildRack((s.hands && s.hands[myId]) || []);
+    buildBoard(s.board || []);
+    if (!rackLoaded.current) { buildRack((s.hands && s.hands[myId]) || []); rackLoaded.current = true; }
     tidy(); syncTurnUI();
     if (s.winner && endedFor.current !== s.winner) { endedFor.current = s.winner; stopTimer(); recordResult(s.winner === myId); setEndBanner({ won: s.winner === myId }); }
   }
@@ -423,7 +425,7 @@ export default function GameApp({ userId }: { userId: string }) {
   async function drawTile() {
     const s = gameState.current; if (!s) return; const myId = meRef.current!.id; if (s.turn !== myId) return;
     const pool = [...(s.pool || [])]; let hands = s.hands;
-    if (pool.length) { const t = pool.pop(); hands = { ...s.hands, [myId]: [...(s.hands[myId] || []), t] }; } else toast("Brak klocków w puli");
+    if (pool.length) { const t = pool.pop(); hands = { ...s.hands, [myId]: [...(s.hands[myId] || []), t] }; tray().appendChild(mkTileObj(t)); tidy(); } else toast("Brak klocków w puli");
     const order: string[] = s.turn_order; const nextUid = order[(order.indexOf(myId) + 1) % order.length];
     await supabase.from("game_state").update({ pool, hands, turn: nextUid }).eq("table_id", s.table_id);
   }
