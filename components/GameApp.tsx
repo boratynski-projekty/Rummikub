@@ -291,7 +291,11 @@ export default function GameApp({ userId }: { userId: string }) {
   }
   async function maybeStart(seats: Seat[]) {
     const r = roomRef.current; if (!r || !r.iAmOwner || r.table.status === "playing") return;
-    if (seats.length >= 2 && seats.every((s) => s.ready)) await supabase.from("game_tables").update({ status: "playing" }).eq("id", r.table.id);
+    if (seats.length >= 2 && seats.every((s) => s.ready)) {
+      // skasuj poprzedni stan gry, żeby rozdać świeżą talię (a nie użyć zużytej)
+      await supabase.from("game_state").delete().eq("table_id", r.table.id);
+      await supabase.from("game_tables").update({ status: "playing" }).eq("id", r.table.id);
+    }
   }
   async function toggleReady() {
     const r = roomRef.current!; const meS = r.seats.find((s) => s.me); const nv = !(meS && meS.ready);
