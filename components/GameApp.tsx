@@ -29,6 +29,8 @@ export default function GameApp({ userId }: { userId: string }) {
   const [confirmState, setConfirmState] = useState<{ title: string; msg: string; onYes: () => void } | null>(null);
   const [invitePopup, setInvitePopup] = useState<GameTable | null>(null);
   const popupShown = useRef<Set<string>>(new Set());
+  const [presence, setPresence] = useState<Record<string, Status>>({});
+  const presenceCh = useRef<any>(null);
 
   // room
   const [room, setRoom] = useState<{ table: GameTable; iAmOwner: boolean; seats: Seat[] } | null>(null);
@@ -148,7 +150,16 @@ export default function GameApp({ userId }: { userId: string }) {
     const pr = supabase.channel("profiles-" + uid)
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles" }, () => { loadFriends(); if (roomRef.current) refreshRoom(); })
       .subscribe();
-    baseChans.current = [fr, tb, pr];
+    // PRESENCE — pewne wykrywanie online/offline (po połączeniu websocket, nie po timerach)
+    const pres = supabase.channel("online", { config: { presence: { key: uid } } });
+    pres.on("presence", { event: "sync" }, () => {
+      const state: any = pres.presenceState(); const map: Record<string, Status> = {};
+      Object.keys(state).forEach((k) => { const meta = state[k]?.[0]; if (meta) map[k] = meta.status as Status; });
+      setPresence(map);
+    });
+    pres.subscribe((st) => { if (st === "SUBSCRIBED") pres.track({ status: trackStatus() }); });
+    presenceCh.current = pres;
+    baseChans.current = [fr, tb, pr, pres];
   }
 
   /* ===== PROFIL: nick / status / avatar / wyloguj ===== */
@@ -158,19 +169,22 @@ export default function GameApp({ userId }: { userId: string }) {
     if (error) return toast("Błąd: " + error.message);
     const np = { ...meRef.current!, nick: v }; meRef.current = np; setMe(np); toast("Zapisano nick");
   }
+  function trackStatus(): Status {
+    if (statusMode.current === "inv") return "inv";
+    return (meRef.current?.status as Status) || "on";
+  }
   function broadcastStatus(s: Status) {
     if (!meRef.current) return;
+    if (s !== "off") presenceCh.current?.track({ status: s }); // rozgłoś przez presence
     if (meRef.current.status === s) return;
     const np = { ...meRef.current, status: s }; meRef.current = np; setMe(np);
     supabase.from("profiles").update({ status: s, last_seen: new Date().toISOString() }).eq("id", np.id);
   }
-  // efektywny status z uwzględnieniem aktywności (brak heartbeat > 65s => offline)
+  // online/offline z PRESENCE (obecność na kanale = otwarte połączenie)
   function displayStatus(p: any): Status {
-    if (!p) return "off";
-    if (p.status === "inv") return "inv";
-    if (p.status === "off") return "off";
-    if (p.last_seen && Date.now() - new Date(p.last_seen).getTime() > 90000) return "off";
-    return (p.status as Status) || "off";
+    if (!p || !p.id) return "off";
+    if (meRef.current && p.id === meRef.current.id) return meRef.current.status as Status;
+    return presence[p.id] || "off";
   }
   function setStatusMode(mode: "auto" | "inv") {
     statusMode.current = mode;
