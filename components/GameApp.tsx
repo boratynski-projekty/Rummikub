@@ -363,7 +363,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const ch = supabase.channel("chat-" + tableId)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `table_id=eq.${tableId}` }, (payload: any) => {
         setChatMsgs((prev) => [...prev, payload.new]);
-        if (!chatOpenRef.current && payload.new.user_id !== meRef.current!.id) setUnread((u) => u + 1);
+        if (payload.new.user_id !== meRef.current!.id) { try { (navigator as any).vibrate?.(120); } catch {} if (!chatOpenRef.current) setUnread((u) => u + 1); }
       })
       .subscribe();
     roomChans.current.push(ch);
@@ -398,6 +398,9 @@ export default function GameApp({ userId }: { userId: string }) {
   const boardPushT = useRef<any>(null);
   const deadlineActing = useRef(false);
   const hasDeadlineCol = useRef(true); // gdy w bazie brak kolumny turn_deadline — pomijamy ją w zapisach
+  const history = useRef<{ board: any[]; rack: any[] }[]>([]);
+  const scrollRAF = useRef<number | null>(null);
+  const autoVel = useRef(0);
 
   function buildDeck() {
     const deck: any[] = [];
@@ -459,7 +462,7 @@ export default function GameApp({ userId }: { userId: string }) {
     // a w mojej turze tylko na jej początku (żeby nie psuć mojego układania).
     if (!isMyTurn || turnChanged) buildBoard(s.board || []);
     if (!rackLoaded.current) { buildRack((s.hands && s.hands[myId]) || []); rackLoaded.current = true; }
-    if (turnChanged) { deadlineActing.current = false; if (isMyTurn) { playedThisTurn.current = false; myTurnAlert(); } }
+    if (turnChanged) { deadlineActing.current = false; if (isMyTurn) { playedThisTurn.current = false; initHistory(); myTurnAlert(); } }
     curTurnUid.current = s.turn;
     tidy(); syncTurnUI();
     if (s.winner && endedFor.current !== s.winner) { endedFor.current = s.winner; stopTimer(); recordResult(s.winner === myId); setEndBanner({ won: s.winner === myId }); }
@@ -487,6 +490,38 @@ export default function GameApp({ userId }: { userId: string }) {
   function serializeBoard() { return [...melds().querySelectorAll(".meld")].map((m) => tilesOf(m).map((t) => ({ n: t.n, c: t.c, j: t.joker }))); }
   function serializeRack() { return [...tray().querySelectorAll<HTMLElement>(".tile")].map((t) => ({ n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c, j: t.dataset.joker === "1" })); }
   function committedPoints() { return ((gameState.current?.board) || []).reduce((sum: number, m: any[]) => sum + meldPoints(m.map((t) => ({ n: t.n, c: t.c, joker: t.j }))), 0); }
+  // ===== historia ruchów (cofanie / reset w obrębie tury) =====
+  function snapshot() { return { board: serializeBoard(), rack: serializeRack() }; }
+  function initHistory() { history.current = [snapshot()]; }
+  function pushHistory() { history.current.push(snapshot()); }
+  function restoreSnap(s: { board: any[]; rack: any[] }) {
+    buildBoard(s.board); buildRack(s.rack);
+    playedThisTurn.current = history.current.length > 1;
+    tidy(); syncTurnUI(); pushBoard();
+  }
+  function undoMove() {
+    if (turn.current !== 0 || history.current.length <= 1) return;
+    history.current.pop(); restoreSnap(history.current[history.current.length - 1]);
+  }
+  function resetMoves() {
+    if (turn.current !== 0 || history.current.length <= 1) return;
+    history.current = [history.current[0]]; restoreSnap(history.current[0]);
+  }
+  // ===== autoprzewijanie stołu podczas przeciągania przy krawędzi =====
+  function scrollEl(): HTMLElement | null { return document.querySelector(".gametable"); }
+  function scrollTick() {
+    if (!drag.current || !autoVel.current) { scrollRAF.current = null; return; }
+    const c = scrollEl(); if (c) c.scrollTop += autoVel.current;
+    scrollRAF.current = requestAnimationFrame(scrollTick);
+  }
+  function updateAutoScroll(y: number) {
+    const c = scrollEl(); if (!c) { autoVel.current = 0; return; }
+    const r = c.getBoundingClientRect(); const TH = 70, MAX = 18; let v = 0;
+    if (y > r.bottom - TH) v = ((y - (r.bottom - TH)) / TH) * MAX;
+    else if (y < r.top + TH) v = -(((r.top + TH) - y) / TH) * MAX;
+    autoVel.current = Math.max(-MAX, Math.min(MAX, v));
+    if (autoVel.current && !scrollRAF.current) scrollRAF.current = requestAnimationFrame(scrollTick);
+  }
   function tidy() { melds().querySelectorAll(".meld").forEach((m) => { if (!m.querySelector(".tile")) m.remove(); }); el("hint").style.display = melds().querySelector(".meld") ? "none" : "grid"; const c = el("count"); if (c) c.textContent = String(tray().children.length); }
   function tilesOf(m: Element) { return [...m.querySelectorAll<HTMLElement>(".tile")].map((t) => ({ n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c!, joker: t.dataset.joker === "1" })); }
   function validMeld(arr: { n: number | null; c: string; joker: boolean }[]) {
@@ -510,12 +545,26 @@ export default function GameApp({ userId }: { userId: string }) {
     if (!cont) { const m = elem.closest(".meld"); if (m) cont = m; } if (!cont && elem.closest(".gametable")) cont = "NEW"; if (!cont) return null;
     if (cont === "NEW") return { cont: "NEW", before: null }; return { cont, before: beforeIn(cont, x) };
   }
-  function moveGhost(e: PointerEvent) { const g = ghost.current!; g.style.left = e.clientX + "px"; g.style.top = e.clientY + "px"; const loc = locate(e.clientX, e.clientY); const c = caret.current!; if (c.parentNode) c.remove(); if (loc && loc.cont !== "NEW") { loc.before ? loc.cont.insertBefore(c, loc.before) : loc.cont.appendChild(c); } }
+  function moveGhost(e: PointerEvent) { const g = ghost.current!; g.style.left = e.clientX + "px"; g.style.top = e.clientY + "px"; const loc = locate(e.clientX, e.clientY); const c = caret.current!; if (c.parentNode) c.remove(); if (loc && loc.cont !== "NEW") { loc.before ? loc.cont.insertBefore(c, loc.before) : loc.cont.appendChild(c); } updateAutoScroll(e.clientY); }
   function drop(e: PointerEvent) {
     const loc = locate(e.clientX, e.clientY); const d = drag.current!; d.classList.remove("dragging"); const c = caret.current!; if (c.parentNode) c.remove();
-    if (loc) { let cont: any = loc.cont; if (cont === "NEW") cont = newMeld(); if (loc.before && loc.before !== c) cont.insertBefore(d, loc.before); else cont.appendChild(d);
-      if (cont.classList && cont.classList.contains("meld")) { if (!validMeld(tilesOf(cont))) { cont.classList.add("bad"); const ref = cont; setTimeout(() => ref.classList.remove("bad"), 350); tray().appendChild(d); } else if (fromMeld.current !== cont) playedThisTurn.current = true; } }
-    tidy(); syncTurnUI(); pushBoard();
+    autoVel.current = 0; if (scrollRAF.current) { cancelAnimationFrame(scrollRAF.current); scrollRAF.current = null; }
+    let changed = false;
+    if (loc) {
+      let cont: any = loc.cont; if (cont === "NEW") cont = newMeld();
+      if (cont === tray() && fromMeld.current) {
+        fromMeld.current.appendChild(d); // blokada: nie zdejmujemy klocków ze stołu
+        toast("Klocków ze stołu nie można brać na tabliczkę");
+      } else {
+        if (loc.before && loc.before !== c) cont.insertBefore(d, loc.before); else cont.appendChild(d);
+        if (cont.classList && cont.classList.contains("meld")) {
+          if (!validMeld(tilesOf(cont))) { cont.classList.add("bad"); const ref = cont; setTimeout(() => ref.classList.remove("bad"), 350); if (fromMeld.current) fromMeld.current.appendChild(d); else tray().appendChild(d); }
+          else { changed = true; if (fromMeld.current !== cont) playedThisTurn.current = true; }
+        } else { changed = true; } // przekładanie na tabliczce
+      }
+    }
+    tidy(); syncTurnUI();
+    if (changed) { pushHistory(); pushBoard(); }
     ghost.current?.remove(); ghost.current = null; drag.current = null; caret.current = null; fromMeld.current = null;
   }
   function renderOpps() {
@@ -544,6 +593,8 @@ export default function GameApp({ userId }: { userId: string }) {
     yl.classList.toggle("off", !my); yl.innerHTML = (my ? "Twoja kolej" : "Czekaj na swój ruch") + ' · <span id="count">' + tray().children.length + "</span> klocków";
     // dobieranie możliwe tylko, jeśli nic jeszcze nie wyłożyłeś w tej turze
     (el("draw") as HTMLButtonElement).disabled = !my || playedThisTurn.current; (el("sort") as HTMLButtonElement).disabled = false;
+    const undoBtn = el("undo") as HTMLButtonElement | null; if (undoBtn) undoBtn.disabled = !my || history.current.length <= 1;
+    const resetBtn = el("reset") as HTMLButtonElement | null; if (resetBtn) resetBtn.disabled = !my || history.current.length <= 1;
     const b = boardState(); const newPts = b.points - committedPoints();
     let canEnd = my && playedThisTurn.current && b.complete;
     if (my && !entered.current) canEnd = canEnd && newPts >= 30;
@@ -683,7 +734,7 @@ export default function GameApp({ userId }: { userId: string }) {
     let iv: any;
     if (view === "lobby") iv = setInterval(() => { loadTables(); loadRequests(); loadFriends(); }, 6000);
     else if (view === "room") iv = setInterval(() => { refreshRoom(); }, 8000);
-    else if (view === "game") iv = setInterval(() => { syncGameState(); }, 3000);
+    else if (view === "game") iv = setInterval(() => { syncGameState(); }, 1500);
     return () => iv && clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
@@ -864,6 +915,8 @@ export default function GameApp({ userId }: { userId: string }) {
           <div className="rack">
             <div className="rackbar">
               <div className="row" style={{ gap: 8 }}><Avatar p={me} size={32} /><div className="you" id="youlabel">Twoja kolej · <span id="count">0</span> klocków</div></div>
+              <button className="btn ghost" id="undo" title="Cofnij ruch" style={{ padding: "8px 11px" }} onClick={undoMove}>↶</button>
+              <button className="btn ghost" id="reset" title="Cofnij wszystko" style={{ padding: "8px 11px" }} onClick={resetMoves}>⟲</button>
               <button className="btn ghost" id="sort" style={{ padding: "8px 12px" }} onClick={doSort}>Sortuj</button>
               <button className="btn" id="draw" style={{ padding: "8px 12px" }} onClick={drawTile}>Dobierz</button>
               <button className="btn blue" id="endturn" style={{ padding: "8px 12px", marginLeft: "auto" }} onClick={commitTurn}>Zakończ turę</button>
