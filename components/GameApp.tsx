@@ -335,8 +335,15 @@ export default function GameApp({ userId }: { userId: string }) {
         .select().single();
       gs = ins;
     }
+    // poczekaj aż host utworzy stan (gdy dołączamy zanim powstał) — żeby od razu były klocki
+    for (let i = 0; i < 12 && !gs; i++) { await new Promise((res) => setTimeout(res, 500)); const r2 = await supabase.from("game_state").select("*").eq("table_id", r.table.id).maybeSingle(); gs = r2.data; }
     subGame(r.table.id); setupTimer(r.table.time_mode);
-    requestAnimationFrame(() => { if (gameState.current) applyState(gameState.current); else if (gs) applyState(gs); });
+    requestAnimationFrame(() => { if (gs) applyState(gs); });
+  }
+  async function syncGameState() {
+    const r = roomRef.current; if (!r) return;
+    const { data } = await supabase.from("game_state").select("*").eq("table_id", r.table.id).maybeSingle();
+    if (data) applyState(data);
   }
   function subGame(tableId: string) {
     if (gameCh.current) supabase.removeChannel(gameCh.current);
@@ -536,6 +543,7 @@ export default function GameApp({ userId }: { userId: string }) {
     let iv: any;
     if (view === "lobby") iv = setInterval(() => { loadTables(); loadRequests(); loadFriends(); }, 6000);
     else if (view === "room") iv = setInterval(() => { refreshRoom(); }, 8000);
+    else if (view === "game") iv = setInterval(() => { syncGameState(); }, 3000);
     return () => iv && clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
