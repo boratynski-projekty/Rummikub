@@ -1,4 +1,4 @@
-export type Status = "on" | "inv" | "off";
+export type Status = "on" | "inv" | "off" | "away";
 
 export interface Profile {
   id: string;

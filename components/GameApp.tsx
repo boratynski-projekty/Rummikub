@@ -16,6 +16,8 @@ export default function GameApp({ userId }: { userId: string }) {
   const [view, setView] = useState<"loading" | "lobby" | "room" | "game">("loading");
   const [me, setMe] = useState<Profile | null>(null);
   const meRef = useRef<Profile | null>(null);
+  const statusMode = useRef<"auto" | "inv">("auto");
+  const inactivityTimer = useRef<any>(null);
   const [friends, setFriends] = useState<(Profile & { reqId?: string })[]>([]);
   const friendsRef = useRef<typeof friends>([]);
   const [requests, setRequests] = useState<{ id: string; from: Profile }[]>([]);
@@ -58,6 +60,8 @@ export default function GameApp({ userId }: { userId: string }) {
       if (!active) return;
       if (!prof) { toast("Nie udało się wczytać profilu"); return; }
       meRef.current = prof; setMe(prof);
+      if (prof.status === "inv") statusMode.current = "inv";
+      else { statusMode.current = "auto"; broadcastStatus("on"); }
       await Promise.all([loadFriends(), loadRequests(), loadTables()]);
       subBase();
       setView("lobby");
@@ -65,6 +69,12 @@ export default function GameApp({ userId }: { userId: string }) {
     return () => { active = true; cleanupAll(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Pokaż popup zaproszenia gdy zmieni się lista zaproszeń / znajomych / widok
+  useEffect(() => {
+    if (view === "lobby") checkInvitePopup();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myInvites, friends, view]);
 
   async function fetchProfile(id: string): Promise<Profile | null> {
     const { data } = await supabase.from("profiles").select("*").eq("id", id).maybeSingle();
@@ -145,7 +155,21 @@ export default function GameApp({ userId }: { userId: string }) {
     if (error) return toast("Błąd: " + error.message);
     const np = { ...meRef.current!, nick: v }; meRef.current = np; setMe(np); toast("Zapisano nick");
   }
-  async function changeStatus(s: Status) { const np = { ...meRef.current!, status: s }; meRef.current = np; setMe(np); await supabase.from("profiles").update({ status: s }).eq("id", np.id); }
+  function broadcastStatus(s: Status) {
+    if (!meRef.current) return;
+    if (meRef.current.status === s) return;
+    const np = { ...meRef.current, status: s }; meRef.current = np; setMe(np);
+    supabase.from("profiles").update({ status: s }).eq("id", np.id);
+  }
+  function setStatusMode(mode: "auto" | "inv") {
+    statusMode.current = mode;
+    if (mode === "inv") broadcastStatus("inv");
+    else { broadcastStatus("on"); resetInactivity(); }
+  }
+  function resetInactivity() {
+    clearTimeout(inactivityTimer.current);
+    inactivityTimer.current = setTimeout(() => { if (statusMode.current === "auto") broadcastStatus("away"); }, 60000);
+  }
   async function onAvatar(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return;
     if (file.size > 3 * 1024 * 1024) return toast("Plik za duży (max 3 MB)");
@@ -447,6 +471,28 @@ export default function GameApp({ userId }: { userId: string }) {
 
   function cleanupAll() { roomChans.current.forEach((c) => { try { supabase.removeChannel(c); } catch {} }); baseChans.current.forEach((c) => { try { supabase.removeChannel(c); } catch {} }); stopTimer(); }
 
+  /* ===== STATUS oparty na aktywności ===== */
+  useEffect(() => {
+    const onActivity = () => {
+      if (statusMode.current !== "auto") return;
+      if (meRef.current && meRef.current.status !== "on") broadcastStatus("on");
+      resetInactivity();
+    };
+    const onVis = () => {
+      if (statusMode.current !== "auto") return;
+      if (document.visibilityState === "hidden") broadcastStatus("off");
+      else { broadcastStatus("on"); resetInactivity(); }
+    };
+    const onLeave = () => { if (statusMode.current === "auto") broadcastStatus("off"); };
+    const evs: (keyof WindowEventMap)[] = ["mousemove", "keydown", "touchstart", "click", "scroll"];
+    evs.forEach((ev) => window.addEventListener(ev, onActivity, { passive: true }));
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onLeave);
+    resetInactivity();
+    return () => { evs.forEach((ev) => window.removeEventListener(ev, onActivity)); document.removeEventListener("visibilitychange", onVis); window.removeEventListener("pagehide", onLeave); clearTimeout(inactivityTimer.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /* ===== PWA ===== */
   useEffect(() => {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -483,7 +529,7 @@ export default function GameApp({ userId }: { userId: string }) {
 
   if (view === "loading") return <div className="view login-bg"><div className="logo" style={{ fontSize: 22 }}><span>RUM</span><span>MI</span><span>KUB</span></div></div>;
 
-  const statusLabels: Record<string, string> = { on: "🟢 online", inv: "🟡 niewidoczny", off: "⚪ offline" };
+  const statusLabels: Record<string, string> = { on: "🟢 online", inv: "🟡 niewidoczny", off: "⚪ offline", away: "🟠 zaraz wracam" };
   const uid = me?.id;
   const mine = tables.filter((t) => t.host === uid);
   const invitedT = tables.filter((t) => t.host !== uid && t.visibility === "private" && myInvites.includes(t.id));
@@ -497,8 +543,8 @@ export default function GameApp({ userId }: { userId: string }) {
           <div className="top">
             <div className="logo"><span>RUM</span><span>MI</span><span>KUB</span></div>
             <div className="me">
-              <select className="statussel" value={me.status} onChange={(e) => changeStatus(e.target.value as Status)}>
-                <option value="on">🟢 Online</option><option value="inv">🟡 Niewidoczny</option><option value="off">⚪ Offline</option>
+              <select className="statussel" value={me.status === "inv" ? "inv" : "on"} onChange={(e) => setStatusMode(e.target.value === "inv" ? "inv" : "auto")}>
+                <option value="on">🟢 Online (auto)</option><option value="inv">🟡 Niewidoczny</option>
               </select>
               <Avatar p={me} size={36} status />
             </div>
@@ -679,8 +725,9 @@ export default function GameApp({ userId }: { userId: string }) {
               <div className="field"><label>Zaproś znajomych</label>
                 {friends.length === 0 ? <div className="empty">Najpierw dodaj znajomych.</div> : friends.map((f) => (
                   <label className="pick" key={f.id}>
+                    <Avatar p={f} size={34} status />
+                    <span className="grow" style={{ fontWeight: 600 }}>{f.nick}</span>
                     <input type="checkbox" checked={invited.has(f.id)} onChange={(e) => { const n = new Set(invited); e.target.checked ? n.add(f.id) : n.delete(f.id); setInvited(n); }} />
-                    <span>{f.nick} <span className="sub">({f.code})</span></span>
                   </label>
                 ))}
               </div>
