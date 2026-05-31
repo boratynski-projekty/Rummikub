@@ -385,9 +385,10 @@ export default function GameApp({ userId }: { userId: string }) {
       const order = r.seats.map((s) => s.id);
       const deck = buildDeck(); const hands: Record<string, any[]> = {}; const ent: Record<string, boolean> = {};
       order.forEach((uid) => { hands[uid] = deck.splice(0, 14); ent[uid] = false; });
-      const { data: ins } = await supabase.from("game_state")
+      const { data: ins, error: insErr } = await supabase.from("game_state")
         .insert({ table_id: r.table.id, board: [], hands, pool: deck, turn_order: order, turn: order[0], entered: ent, winner: null, turn_deadline: newDeadline() })
         .select().single();
+      if (insErr) toast("Błąd rozdania: " + insErr.message);
       gs = ins;
     }
     // poczekaj aż host utworzy stan (gdy dołączamy zanim powstał) — żeby od razu były klocki
