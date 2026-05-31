@@ -397,6 +397,7 @@ export default function GameApp({ userId }: { userId: string }) {
   const rackLoaded = useRef(false); // tabliczkę ładujemy z bazy tylko raz (zachowujemy ułożenie gracza)
   const boardPushT = useRef<any>(null);
   const deadlineActing = useRef(false);
+  const hasDeadlineCol = useRef(true); // gdy w bazie brak kolumny turn_deadline — pomijamy ją w zapisach
 
   function buildDeck() {
     const deck: any[] = [];
@@ -407,19 +408,24 @@ export default function GameApp({ userId }: { userId: string }) {
   }
   async function startGame() {
     const r = roomRef.current!; setView("game"); playedThisTurn.current = false; endedFor.current = null; rackLoaded.current = false; setEntryInfo(null);
-    let { data: gs } = await supabase.from("game_state").select("*").eq("table_id", r.table.id).maybeSingle();
+    let { data: gs, error: selErr } = await supabase.from("game_state").select("*").eq("table_id", r.table.id).maybeSingle();
+    if (selErr) toast("Błąd odczytu gry: " + selErr.message);
     if (!gs && r.iAmOwner) {
       const order = r.seats.map((s) => s.id);
       const deck = buildDeck(); const hands: Record<string, any[]> = {}; const ent: Record<string, boolean> = {};
       order.forEach((uid) => { hands[uid] = deck.splice(0, 14); ent[uid] = false; });
-      const { data: ins, error: insErr } = await supabase.from("game_state")
-        .insert({ table_id: r.table.id, board: [], hands, pool: deck, turn_order: order, turn: order[0], entered: ent, winner: null, turn_deadline: newDeadline() })
-        .select().single();
-      if (insErr) toast("Błąd rozdania: " + insErr.message);
-      gs = ins;
+      const base: any = { table_id: r.table.id, board: [], hands, pool: deck, turn_order: order, turn: order[0], entered: ent, winner: null };
+      let resp = await supabase.from("game_state").insert({ ...base, ...dlField() }).select().single();
+      if (resp.error) { // np. brak kolumny turn_deadline — spróbuj bez niej
+        hasDeadlineCol.current = false;
+        resp = await supabase.from("game_state").insert(base).select().single();
+        if (resp.error) toast("Błąd rozdania: " + resp.error.message);
+      }
+      gs = resp.data;
     }
     // poczekaj aż host utworzy stan (gdy dołączamy zanim powstał) — żeby od razu były klocki
-    for (let i = 0; i < 12 && !gs; i++) { await new Promise((res) => setTimeout(res, 500)); const r2 = await supabase.from("game_state").select("*").eq("table_id", r.table.id).maybeSingle(); gs = r2.data; }
+    for (let i = 0; i < 16 && !gs; i++) { await new Promise((res) => setTimeout(res, 500)); const r2 = await supabase.from("game_state").select("*").eq("table_id", r.table.id).maybeSingle(); gs = r2.data; }
+    if (!gs) toast("Nie udało się wczytać gry — sprawdź tabelę game_state w Supabase");
     subGame(r.table.id); setupTimer(r.table.time_mode);
     requestAnimationFrame(() => { if (gs) applyState(gs); });
   }
@@ -556,7 +562,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const ent = { ...s.entered, [myId]: true };
     const order: string[] = s.turn_order; const nextUid = order[(order.indexOf(myId) + 1) % order.length];
     const winner = newHand.length === 0 ? myId : (s.winner || null);
-    await supabase.from("game_state").update({ board: serializeBoard(), hands, entered: ent, turn: nextUid, winner, turn_deadline: newDeadline() }).eq("table_id", s.table_id);
+    await supabase.from("game_state").update({ board: serializeBoard(), hands, entered: ent, turn: nextUid, winner, ...dlField() }).eq("table_id", s.table_id);
   }
   function clearTilesToRack() {
     const s = gameState.current; if (!s) return; const myId = meRef.current!.id;
@@ -571,12 +577,13 @@ export default function GameApp({ userId }: { userId: string }) {
     const pool = [...(s.pool || [])]; let hands = s.hands;
     if (pool.length) { const t = pool.pop(); hands = { ...s.hands, [myId]: [...(s.hands[myId] || []), t] }; tray().appendChild(mkTileObj(t)); tidy(); } else toast("Brak klocków w puli");
     const order: string[] = s.turn_order; const nextUid = order[(order.indexOf(myId) + 1) % order.length];
-    await supabase.from("game_state").update({ pool, hands, turn: nextUid, turn_deadline: newDeadline() }).eq("table_id", s.table_id);
+    await supabase.from("game_state").update({ pool, hands, turn: nextUid, ...dlField() }).eq("table_id", s.table_id);
   }
   function newDeadline(): string | null {
     const m = roomRef.current?.table.time_mode; if (!m || m === "none") return null;
     return new Date(Date.now() + Number(m) * 1000).toISOString();
   }
+  function dlField(): Record<string, any> { return hasDeadlineCol.current ? { turn_deadline: newDeadline() } : {}; }
   function amINext(): boolean {
     const s = gameState.current; if (!s) return false; const o: string[] = s.turn_order || [];
     return o[(o.indexOf(s.turn) + 1) % o.length] === meRef.current!.id;
@@ -605,7 +612,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const next = o[(o.indexOf(cur) + 1) % o.length];
     const pool = [...(s.pool || [])]; let hands = s.hands;
     if (pool.length) { const t = pool.pop(); hands = { ...s.hands, [cur]: [...(s.hands[cur] || []), t] }; }
-    await supabase.from("game_state").update({ pool, hands, turn: next, turn_deadline: newDeadline() }).eq("table_id", s.table_id);
+    await supabase.from("game_state").update({ pool, hands, turn: next, ...dlField() }).eq("table_id", s.table_id);
   }
   function timeoutTurn() {
     if (turn.current !== 0) return;
