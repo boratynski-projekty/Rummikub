@@ -492,7 +492,11 @@ export default function GameApp({ userId }: { userId: string }) {
   function buildRack(hand: any[]) { tray().innerHTML = ""; hand.forEach((t) => tray().appendChild(mkTileObj(t))); }
   function serializeBoard() { return [...melds().querySelectorAll(".meld")].map((m) => tilesOf(m).map((t) => ({ n: t.n, c: t.c, j: t.joker }))); }
   function serializeRack() { return [...tray().querySelectorAll<HTMLElement>(".tile")].map((t) => ({ n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c, j: t.dataset.joker === "1" })); }
-  function committedPoints() { return ((gameState.current?.board) || []).reduce((sum: number, m: any[]) => sum + meldPoints(m.map((t) => ({ n: t.n, c: t.c, joker: t.j }))), 0); }
+  // punkty układów już leżących na stole na POCZĄTKU mojej tury (z pierwszego snapshotu historii)
+  function committedPoints() {
+    const base = history.current[0]?.board || [];
+    return base.reduce((sum: number, m: any[]) => sum + meldPoints(m.map((t: any) => ({ n: t.n, c: t.c, joker: t.j }))), 0);
+  }
   // ===== historia ruchów (cofanie / reset w obrębie tury) =====
   function snapshot() { return { board: serializeBoard(), rack: serializeRack() }; }
   function initHistory() { history.current = [snapshot()]; }
