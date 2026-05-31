@@ -28,6 +28,7 @@ export default function GameApp({ userId }: { userId: string }) {
   const [toastMsg, setToastMsg] = useState("");
   const [confirmState, setConfirmState] = useState<{ title: string; msg: string; onYes: () => void } | null>(null);
   const [invitePopup, setInvitePopup] = useState<GameTable | null>(null);
+  const [turnFlash, setTurnFlash] = useState(false);
   const popupShown = useRef<Set<string>>(new Set());
   const [presence, setPresence] = useState<Record<string, Status>>({});
   const presenceCh = useRef<any>(null);
@@ -67,6 +68,7 @@ export default function GameApp({ userId }: { userId: string }) {
       await Promise.all([loadFriends(), loadRequests(), loadTables()]);
       subBase();
       setView("lobby");
+      ensureNotify();
     })();
     return () => { active = true; cleanupAll(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -138,7 +140,42 @@ export default function GameApp({ userId }: { userId: string }) {
     if (!pend) return;
     popupShown.current.add(pend.id);
     setInvitePopup(pend);
+    const hostNick = (friendsRef.current.find((f) => f.id === pend.host) || ({} as any)).nick || "Znajomy";
+    notify("📩 Zaproszenie do gry", `${hostNick} zaprasza Cię do „${pend.name}"`);
+    try { (navigator as any).vibrate?.([150, 80, 150]); } catch {}
   }, []);
+  async function ensureNotify() {
+    try {
+      if (!("Notification" in window)) return;
+      let p = Notification.permission;
+      if (p === "default") p = await Notification.requestPermission();
+      if (p === "granted") setupPush();
+    } catch {}
+  }
+  function notify(title: string, body: string) {
+    try { if ("Notification" in window && Notification.permission === "granted") new Notification(title, { body, icon: "/icon-192.png" }); } catch {}
+  }
+  function urlB64ToUint8Array(b64: string) {
+    const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+    const base = (b64 + pad).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(base); const arr = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+    return arr;
+  }
+  async function setupPush() {
+    try {
+      const VAPID = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "";
+      if (!VAPID || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
+      if (Notification.permission !== "granted" || !meRef.current) return;
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8Array(VAPID) });
+      await supabase.from("push_subscriptions").upsert({ endpoint: sub.endpoint, user_id: meRef.current.id, subscription: sub.toJSON() }, { onConflict: "endpoint" });
+    } catch {}
+  }
+  function pushInvite(toUserId: string, tableName: string) {
+    supabase.functions.invoke("notify-invite", { body: { toUserId, title: "📩 Zaproszenie do gry", body: `${meRef.current!.nick} zaprasza Cię do „${tableName}"`, url: "/app" } }).catch(() => {});
+  }
 
   function subBase() {
     const uid = meRef.current!.id;
@@ -223,7 +260,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const { data: t, error } = await supabase.from("game_tables").insert({ name, visibility: createVis, time_mode: createTime, host: meRef.current!.id, status: "waiting" }).select().single();
     if (error) return toast("Błąd: " + error.message);
     await supabase.from("table_members").insert({ table_id: (t as any).id, user_id: meRef.current!.id, ready: false });
-    if (createVis === "private" && invited.size) await supabase.from("table_invites").insert([...invited].map((uid) => ({ table_id: (t as any).id, user_id: uid })));
+    if (createVis === "private" && invited.size) { await supabase.from("table_invites").insert([...invited].map((uid) => ({ table_id: (t as any).id, user_id: uid }))); [...invited].forEach((uid) => pushInvite(uid, name)); }
     setCreateOpen(false); enterRoom((t as any).id);
   }
 
@@ -286,7 +323,7 @@ export default function GameApp({ userId }: { userId: string }) {
   function leaveRoomCleanup() { roomChans.current.forEach((c) => supabase.removeChannel(c)); roomChans.current = []; roomRef.current = null; setRoom(null); }
   async function leaveRoom() { const r = roomRef.current; if (r && !r.iAmOwner) await supabase.from("table_members").delete().eq("table_id", r.table.id).eq("user_id", meRef.current!.id); leaveRoomCleanup(); setView("lobby"); loadTables(); }
   async function closeTable() { const r = roomRef.current!; await supabase.from("game_tables").update({ status: "closed" }).eq("id", r.table.id); leaveRoomCleanup(); toast("Stół zamknięty"); setView("lobby"); }
-  async function inviteAtTable(uid: string) { await supabase.from("table_invites").upsert({ table_id: roomRef.current!.table.id, user_id: uid }, { onConflict: "table_id,user_id" }); setAtTableOpen(false); toast("Zaproszono znajomego"); }
+  async function inviteAtTable(uid: string) { await supabase.from("table_invites").upsert({ table_id: roomRef.current!.table.id, user_id: uid }, { onConflict: "table_id,user_id" }); pushInvite(uid, roomRef.current!.table.name); setAtTableOpen(false); toast("Zaproszono znajomego"); }
 
   /* ===== CZAT ===== */
   function subChat(tableId: string) {
@@ -316,7 +353,6 @@ export default function GameApp({ userId }: { userId: string }) {
   const turn = useRef(0);
   const playedThisTurn = useRef(false);
   const entered = useRef(false); // czy gracz „wszedł do gry" (pierwszy układ min. 30 pkt)
-  const roundTime = useRef<number | null>(null);
   const timerInt = useRef<any>(null);
   const tileId = useRef(0);
   const drag = useRef<HTMLElement | null>(null);
@@ -329,6 +365,7 @@ export default function GameApp({ userId }: { userId: string }) {
   const endedFor = useRef<string | null>(null);
   const rackLoaded = useRef(false); // tabliczkę ładujemy z bazy tylko raz (zachowujemy ułożenie gracza)
   const boardPushT = useRef<any>(null);
+  const deadlineActing = useRef(false);
 
   function buildDeck() {
     const deck: any[] = [];
@@ -345,7 +382,7 @@ export default function GameApp({ userId }: { userId: string }) {
       const deck = buildDeck(); const hands: Record<string, any[]> = {}; const ent: Record<string, boolean> = {};
       order.forEach((uid) => { hands[uid] = deck.splice(0, 14); ent[uid] = false; });
       const { data: ins } = await supabase.from("game_state")
-        .insert({ table_id: r.table.id, board: [], hands, pool: deck, turn_order: order, turn: order[0], entered: ent, winner: null })
+        .insert({ table_id: r.table.id, board: [], hands, pool: deck, turn_order: order, turn: order[0], entered: ent, winner: null, turn_deadline: newDeadline() })
         .select().single();
       gs = ins;
     }
@@ -384,14 +421,15 @@ export default function GameApp({ userId }: { userId: string }) {
     // a w mojej turze tylko na jej początku (żeby nie psuć mojego układania).
     if (!isMyTurn || turnChanged) buildBoard(s.board || []);
     if (!rackLoaded.current) { buildRack((s.hands && s.hands[myId]) || []); rackLoaded.current = true; }
-    if (turnChanged) { resetRoundTimer(); if (isMyTurn) { playedThisTurn.current = false; myTurnAlert(); } }
+    if (turnChanged) { deadlineActing.current = false; if (isMyTurn) { playedThisTurn.current = false; myTurnAlert(); } }
     curTurnUid.current = s.turn;
     tidy(); syncTurnUI();
     if (s.winner && endedFor.current !== s.winner) { endedFor.current = s.winner; stopTimer(); recordResult(s.winner === myId); setEndBanner({ won: s.winner === myId }); }
   }
   function myTurnAlert() {
     const rk = document.querySelector(".rack"); if (rk) { rk.classList.add("myturn"); setTimeout(() => rk.classList.remove("myturn"), 2600); }
-    try { (navigator as any).vibrate?.([130, 80, 130]); } catch {}
+    setTurnFlash(true); setTimeout(() => setTurnFlash(false), 1600);
+    try { (navigator as any).vibrate?.([200, 100, 200, 100, 350]); } catch {}
   }
   function pushBoard() {
     const s = gameState.current; if (!s || s.turn !== meRef.current!.id) return;
@@ -486,12 +524,14 @@ export default function GameApp({ userId }: { userId: string }) {
     const ent = { ...s.entered, [myId]: true };
     const order: string[] = s.turn_order; const nextUid = order[(order.indexOf(myId) + 1) % order.length];
     const winner = newHand.length === 0 ? myId : (s.winner || null);
-    await supabase.from("game_state").update({ board: serializeBoard(), hands, entered: ent, turn: nextUid, winner }).eq("table_id", s.table_id);
+    await supabase.from("game_state").update({ board: serializeBoard(), hands, entered: ent, turn: nextUid, winner, turn_deadline: newDeadline() }).eq("table_id", s.table_id);
   }
   function clearTilesToRack() {
     const s = gameState.current; if (!s) return; const myId = meRef.current!.id;
+    const had = playedThisTurn.current;
     buildBoard(s.board || []); buildRack(s.hands[myId] || []);
-    playedThisTurn.current = false; tidy(); syncTurnUI(); toast("Klocki wróciły na tabliczkę");
+    playedThisTurn.current = false; tidy(); syncTurnUI();
+    if (had) toast("Klocki wróciły na tabliczkę");
   }
   async function drawTile() {
     const s = gameState.current; if (!s) return; const myId = meRef.current!.id; if (s.turn !== myId) return;
@@ -499,9 +539,42 @@ export default function GameApp({ userId }: { userId: string }) {
     const pool = [...(s.pool || [])]; let hands = s.hands;
     if (pool.length) { const t = pool.pop(); hands = { ...s.hands, [myId]: [...(s.hands[myId] || []), t] }; tray().appendChild(mkTileObj(t)); tidy(); } else toast("Brak klocków w puli");
     const order: string[] = s.turn_order; const nextUid = order[(order.indexOf(myId) + 1) % order.length];
-    await supabase.from("game_state").update({ pool, hands, turn: nextUid }).eq("table_id", s.table_id);
+    await supabase.from("game_state").update({ pool, hands, turn: nextUid, turn_deadline: newDeadline() }).eq("table_id", s.table_id);
   }
-  function setupTimer(mode: string) { stopTimer(); const tEl = el("timer"); if (mode === "none") { roundTime.current = null; tEl.textContent = "⏱ bez limitu"; tEl.classList.remove("low"); return; } roundTime.current = +mode; let s = roundTime.current; const tick = () => { tEl.textContent = "⏱ 0:" + String(s).padStart(2, "0"); tEl.classList.toggle("low", s <= 10); if (s <= 0) { if (turn.current === 0) timeoutTurn(); return; } s--; }; tick(); timerInt.current = setInterval(tick, 1000); (tEl as any)._reset = () => { s = roundTime.current!; }; }
+  function newDeadline(): string | null {
+    const m = roomRef.current?.table.time_mode; if (!m || m === "none") return null;
+    return new Date(Date.now() + Number(m) * 1000).toISOString();
+  }
+  function amINext(): boolean {
+    const s = gameState.current; if (!s) return false; const o: string[] = s.turn_order || [];
+    return o[(o.indexOf(s.turn) + 1) % o.length] === meRef.current!.id;
+  }
+  function setupTimer(mode: string) {
+    stopTimer(); const tEl = el("timer");
+    if (mode === "none") { tEl.textContent = "⏱ bez limitu"; tEl.classList.remove("low"); return; }
+    const tick = () => {
+      const dl = gameState.current?.turn_deadline;
+      if (!dl) { tEl.textContent = "⏱ —"; return; }
+      let rem = Math.ceil((new Date(dl).getTime() - Date.now()) / 1000); if (rem < 0) rem = 0;
+      tEl.textContent = "⏱ 0:" + String(rem).padStart(2, "0"); tEl.classList.toggle("low", rem <= 10);
+      if (rem <= 0) handleDeadline();
+    };
+    tick(); timerInt.current = setInterval(tick, 1000);
+  }
+  function handleDeadline() {
+    if (deadlineActing.current) return;
+    const s = gameState.current; if (!s || !s.turn_deadline) return;
+    const over = (Date.now() - new Date(s.turn_deadline).getTime()) / 1000;
+    if (turn.current === 0) { deadlineActing.current = true; timeoutTurn(); setTimeout(() => (deadlineActing.current = false), 3000); }
+    else if (over >= 5 && amINext()) { deadlineActing.current = true; forceSkipAbsent(); setTimeout(() => (deadlineActing.current = false), 3000); }
+  }
+  async function forceSkipAbsent() {
+    const s = gameState.current; if (!s) return; const cur = s.turn; const o: string[] = s.turn_order;
+    const next = o[(o.indexOf(cur) + 1) % o.length];
+    const pool = [...(s.pool || [])]; let hands = s.hands;
+    if (pool.length) { const t = pool.pop(); hands = { ...s.hands, [cur]: [...(s.hands[cur] || []), t] }; }
+    await supabase.from("game_state").update({ pool, hands, turn: next, turn_deadline: newDeadline() }).eq("table_id", s.table_id);
+  }
   function timeoutTurn() {
     if (turn.current !== 0) return;
     // niekompletne / niepoprawne układy wracają do ręki
@@ -512,7 +585,6 @@ export default function GameApp({ userId }: { userId: string }) {
     if (made) commitTurn();                 // poprawne układy zostają, tura się kończy
     else { clearTilesToRack(); drawTile(); } // nic ważnego nie wyłożono → wszystko wraca + dobranie
   }
-  function resetRoundTimer() { const tEl = el("timer"); if (tEl && (tEl as any)._reset) (tEl as any)._reset(); }
   function stopTimer() { if (timerInt.current) clearInterval(timerInt.current); timerInt.current = null; }
   function doSort() { const t = tray(); const ts = [...t.children].filter((x) => x.classList.contains("tile")) as HTMLElement[]; ts.sort((a, b) => COLORS.indexOf(a.dataset.c!) - COLORS.indexOf(b.dataset.c!) || (+a.dataset.n! - +b.dataset.n!)); ts.forEach((x) => t.appendChild(x)); }
   async function recordResult(won: boolean) {
@@ -531,6 +603,8 @@ export default function GameApp({ userId }: { userId: string }) {
 
   /* ===== STATUS oparty na aktywności ===== */
   useEffect(() => {
+    const askOnce = () => { ensureNotify(); window.removeEventListener("click", askOnce); window.removeEventListener("touchstart", askOnce); };
+    window.addEventListener("click", askOnce); window.addEventListener("touchstart", askOnce);
     const onActivity = () => {
       if (statusMode.current !== "auto") return;
       if (meRef.current && meRef.current.status !== "on") broadcastStatus("on");
@@ -547,7 +621,7 @@ export default function GameApp({ userId }: { userId: string }) {
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("pagehide", onLeave);
     resetInactivity();
-    return () => { evs.forEach((ev) => window.removeEventListener(ev, onActivity)); document.removeEventListener("visibilitychange", onVis); window.removeEventListener("pagehide", onLeave); clearTimeout(inactivityTimer.current); };
+    return () => { evs.forEach((ev) => window.removeEventListener(ev, onActivity)); document.removeEventListener("visibilitychange", onVis); window.removeEventListener("pagehide", onLeave); window.removeEventListener("click", askOnce); window.removeEventListener("touchstart", askOnce); clearTimeout(inactivityTimer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -872,6 +946,7 @@ export default function GameApp({ userId }: { userId: string }) {
         </div>
       )}
 
+      {turnFlash && <div className="turnflash"><span>Twoja kolej!</span></div>}
       {toastMsg && <div className="toast">{toastMsg}</div>}
     </>
   );

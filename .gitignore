@@ -33,3 +33,7 @@ yarn-error.log*
 
 # stara wersja statyczna (referencyjna, nie wchodzi do builda Next)
 /legacy
+
+# sekrety
+VAPID_KEYS.txt
+/supabase/.temp

@@ -240,6 +240,7 @@ create table if not exists game_state (
   turn uuid,
   entered jsonb not null default '{}',
   winner uuid,
+  turn_deadline timestamptz,
   updated_at timestamptz default now()
 );
 alter table game_state enable row level security;
@@ -291,6 +292,48 @@ npm run dev                  # http://localhost:3000
 ```
 Deploy na Vercel: import repo (wykryje Next.js) + ustaw `NEXT_PUBLIC_SUPABASE_URL` i `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 w Environment Variables. Po deployu dodaj adres `…vercel.app` w Google (JS origins) i Supabase (Site URL + Redirect URLs `/**`).
+
+## 5b. Powiadomienia push (Web Push) — opcjonalne, ale gotowe
+
+Push działa nawet przy zamkniętej apce (PWA na telefonie / przeglądarka w tle).
+
+**1) Tabela na subskrypcje** — w SQL Editor:
+```sql
+create table if not exists push_subscriptions (
+  endpoint text primary key,
+  user_id uuid not null references profiles(id) on delete cascade,
+  subscription jsonb not null,
+  created_at timestamptz default now()
+);
+alter table push_subscriptions enable row level security;
+drop policy if exists ps_select_own on push_subscriptions;
+create policy ps_select_own on push_subscriptions for select using (auth.uid() = user_id);
+drop policy if exists ps_insert_own on push_subscriptions;
+create policy ps_insert_own on push_subscriptions for insert with check (auth.uid() = user_id);
+drop policy if exists ps_update_own on push_subscriptions;
+create policy ps_update_own on push_subscriptions for update using (auth.uid() = user_id);
+drop policy if exists ps_delete_own on push_subscriptions;
+create policy ps_delete_own on push_subscriptions for delete using (auth.uid() = user_id);
+```
+
+**2) Klucze VAPID** — masz już wygenerowane:
+- `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (publiczny) → w `.env.local` i w Vercel → Environment Variables (już wpisany w `.env.local`).
+- prywatny trzymaj TYLKO w sekretach Edge Function (poniżej). **Nie commituj prywatnego.**
+
+**3) Wdrożenie Edge Function** (potrzebny [Supabase CLI](https://supabase.com/docs/guides/cli)):
+```bash
+supabase login
+supabase link --project-ref sdquyipqyednphkokbxw
+supabase secrets set VAPID_PUBLIC_KEY="<TWÓJ_PUBLICZNY_VAPID>"
+supabase secrets set VAPID_PRIVATE_KEY="<TWÓJ_PRYWATNY_VAPID>"
+supabase functions deploy notify-invite
+```
+`SUPABASE_URL` i `SUPABASE_SERVICE_ROLE_KEY` są wstrzykiwane automatycznie — nie ustawiaj ich ręcznie.
+
+> Klucze VAPID (te wygenerowane dla Ciebie) są w pliku `VAPID_KEYS.txt` w projekcie — wpisz je w komendach wyżej i **usuń ten plik / nie commituj go**.
+
+Jak działa: gdy ktoś Cię zaprosi, aplikacja zapraszającego wywołuje funkcję `notify-invite`, która z kluczem
+serwisowym znajduje Twoje subskrypcje push i wysyła powiadomienie — pojawi się nawet przy zamkniętej apce.
 
 ## 6. Uczciwość gry (na przyszłość)
 Walidacja układów jest teraz po stronie klienta. Aby uniemożliwić oszukiwanie, logikę ruchów warto
