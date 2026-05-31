@@ -169,7 +169,7 @@ export default function GameApp({ userId }: { userId: string }) {
     if (!p) return "off";
     if (p.status === "inv") return "inv";
     if (p.status === "off") return "off";
-    if (p.last_seen && Date.now() - new Date(p.last_seen).getTime() > 65000) return "off";
+    if (p.last_seen && Date.now() - new Date(p.last_seen).getTime() > 90000) return "off";
     return (p.status as Status) || "off";
   }
   function setStatusMode(mode: "auto" | "inv") {
@@ -314,6 +314,7 @@ export default function GameApp({ userId }: { userId: string }) {
   const curTurnUid = useRef<string | null>(null);
   const endedFor = useRef<string | null>(null);
   const rackLoaded = useRef(false); // tabliczkę ładujemy z bazy tylko raz (zachowujemy ułożenie gracza)
+  const boardPushT = useRef<any>(null);
 
   function buildDeck() {
     const deck: any[] = [];
@@ -348,20 +349,33 @@ export default function GameApp({ userId }: { userId: string }) {
   function applyState(s: any) {
     gameState.current = s; const myId = meRef.current!.id;
     if (!el("tray")) { requestAnimationFrame(() => applyState(s)); return; }
-    turn.current = s.turn === myId ? 0 : 1;
+    const isMyTurn = s.turn === myId;
+    const turnChanged = curTurnUid.current !== s.turn;
+    turn.current = isMyTurn ? 0 : 1;
     entered.current = !!(s.entered && s.entered[myId]);
-    playedThisTurn.current = false;
-    curTurnUid.current = s.turn;
     players.current = [{ nick: meRef.current!.nick, me: true, profile: meRef.current }];
     (s.turn_order || []).forEach((uid: string) => {
       if (uid === myId) return;
       const seat = roomRef.current?.seats.find((x) => x.id === uid);
       players.current.push({ uid, nick: seat?.nick || "Gracz", profile: seat || {}, tiles: (s.hands?.[uid] || []).length, isTurn: s.turn === uid });
     });
-    buildBoard(s.board || []);
+    // Planszę odbudowujemy: zawsze gdy to NIE moja tura (podgląd na żywo ruchu przeciwnika),
+    // a w mojej turze tylko na jej początku (żeby nie psuć mojego układania).
+    if (!isMyTurn || turnChanged) buildBoard(s.board || []);
     if (!rackLoaded.current) { buildRack((s.hands && s.hands[myId]) || []); rackLoaded.current = true; }
+    if (turnChanged && isMyTurn) { playedThisTurn.current = false; myTurnAlert(); }
+    curTurnUid.current = s.turn;
     tidy(); syncTurnUI();
     if (s.winner && endedFor.current !== s.winner) { endedFor.current = s.winner; stopTimer(); recordResult(s.winner === myId); setEndBanner({ won: s.winner === myId }); }
+  }
+  function myTurnAlert() {
+    const rk = document.querySelector(".rack"); if (rk) { rk.classList.add("myturn"); setTimeout(() => rk.classList.remove("myturn"), 2600); }
+    try { (navigator as any).vibrate?.([130, 80, 130]); } catch {}
+  }
+  function pushBoard() {
+    const s = gameState.current; if (!s || s.turn !== meRef.current!.id) return;
+    clearTimeout(boardPushT.current);
+    boardPushT.current = setTimeout(() => { supabase.from("game_state").update({ board: serializeBoard() }).eq("table_id", s.table_id); }, 130);
   }
   function tray() { return el("tray"); }
   function melds() { return el("melds"); }
@@ -404,7 +418,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const loc = locate(e.clientX, e.clientY); const d = drag.current!; d.classList.remove("dragging"); const c = caret.current!; if (c.parentNode) c.remove();
     if (loc) { let cont: any = loc.cont; if (cont === "NEW") cont = newMeld(); if (loc.before && loc.before !== c) cont.insertBefore(d, loc.before); else cont.appendChild(d);
       if (cont.classList && cont.classList.contains("meld")) { if (!validMeld(tilesOf(cont))) { cont.classList.add("bad"); const ref = cont; setTimeout(() => ref.classList.remove("bad"), 350); tray().appendChild(d); } else if (fromMeld.current !== cont) playedThisTurn.current = true; } }
-    tidy(); syncTurnUI();
+    tidy(); syncTurnUI(); pushBoard();
     ghost.current?.remove(); ghost.current = null; drag.current = null; caret.current = null; fromMeld.current = null;
   }
   function renderOpps() {
@@ -491,7 +505,7 @@ export default function GameApp({ userId }: { userId: string }) {
     };
     const onVis = () => {
       if (statusMode.current !== "auto") return;
-      if (document.visibilityState === "hidden") broadcastStatus("off");
+      if (document.visibilityState === "hidden") broadcastStatus("away");
       else { broadcastStatus("on"); resetInactivity(); }
     };
     const onLeave = () => { if (statusMode.current === "auto") broadcastStatus("off"); };
@@ -509,9 +523,9 @@ export default function GameApp({ userId }: { userId: string }) {
   useEffect(() => {
     // heartbeat: dopóki karta widoczna i tryb auto, odświeżaj last_seen
     const hb = setInterval(() => {
-      if (meRef.current && statusMode.current === "auto" && document.visibilityState === "visible")
+      if (meRef.current && statusMode.current === "auto")
         supabase.from("profiles").update({ last_seen: new Date().toISOString() }).eq("id", meRef.current.id);
-    }, 25000);
+    }, 20000);
     // re-render co 20s, by przeliczyć „offline po nieaktywności"
     const tick = setInterval(() => setTick((t) => t + 1), 20000);
     return () => { clearInterval(hb); clearInterval(tick); };
@@ -519,9 +533,10 @@ export default function GameApp({ userId }: { userId: string }) {
   }, []);
   useEffect(() => {
     // polling listy stołów/zaproszeń w lobby (fallback, gdyby realtime nie dochodził)
-    if (view !== "lobby") return;
-    const iv = setInterval(() => { loadTables(); loadRequests(); }, 6000);
-    return () => clearInterval(iv);
+    let iv: any;
+    if (view === "lobby") iv = setInterval(() => { loadTables(); loadRequests(); loadFriends(); }, 6000);
+    else if (view === "room") iv = setInterval(() => { refreshRoom(); }, 8000);
+    return () => iv && clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
 
