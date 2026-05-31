@@ -29,6 +29,7 @@ export default function GameApp({ userId }: { userId: string }) {
   const [confirmState, setConfirmState] = useState<{ title: string; msg: string; onYes: () => void } | null>(null);
   const [invitePopup, setInvitePopup] = useState<GameTable | null>(null);
   const [turnFlash, setTurnFlash] = useState(false);
+  const [pushOn, setPushOn] = useState(false);
   const popupShown = useRef<Set<string>>(new Set());
   const [presence, setPresence] = useState<Record<string, Status>>({});
   const presenceCh = useRef<any>(null);
@@ -171,7 +172,33 @@ export default function GameApp({ userId }: { userId: string }) {
       let sub = await reg.pushManager.getSubscription();
       if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8Array(VAPID) });
       await supabase.from("push_subscriptions").upsert({ endpoint: sub.endpoint, user_id: meRef.current.id, subscription: sub.toJSON() }, { onConflict: "endpoint" });
+      setPushOn(true);
     } catch {}
+  }
+  async function refreshPushState() {
+    try {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) { setPushOn(false); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      setPushOn(!!sub && Notification.permission === "granted");
+    } catch { setPushOn(false); }
+  }
+  async function togglePush() {
+    if (pushOn) {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) { await supabase.from("push_subscriptions").delete().eq("endpoint", sub.endpoint); await sub.unsubscribe(); }
+      } catch {}
+      setPushOn(false); toast("Powiadomienia wyłączone");
+    } else {
+      if (!("Notification" in window)) return toast("Ta przeglądarka nie wspiera powiadomień");
+      if (!process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY) return toast("Brak klucza VAPID — uzupełnij konfigurację");
+      const p = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+      if (p !== "granted") return toast("Nie udzielono zgody na powiadomienia");
+      await setupPush(); await refreshPushState();
+      toast(pushOn ? "Powiadomienia włączone" : "Powiadomienia włączone");
+    }
   }
   function pushInvite(toUserId: string, tableName: string) {
     supabase.functions.invoke("notify-invite", { body: { toUserId, title: "📩 Zaproszenie do gry", body: `${meRef.current!.nick} zaprasza Cię do „${tableName}"`, url: "/app" } }).catch(() => {});
@@ -645,6 +672,7 @@ export default function GameApp({ userId }: { userId: string }) {
   }, []);
   useEffect(() => {
     // polling listy stołów/zaproszeń w lobby (fallback, gdyby realtime nie dochodził)
+    if (view === "lobby") refreshPushState();
     let iv: any;
     if (view === "lobby") iv = setInterval(() => { loadTables(); loadRequests(); loadFriends(); }, 6000);
     else if (view === "room") iv = setInterval(() => { refreshRoom(); }, 8000);
@@ -722,6 +750,11 @@ export default function GameApp({ userId }: { userId: string }) {
                     <span className="idtag">{me.code}</span>
                     <button className="btn ghost" style={{ padding: "6px 10px", fontSize: 12 }} onClick={() => { navigator.clipboard?.writeText(me.code); toast("Skopiowano kod"); }}>Kopiuj</button>
                     <button className="btn ghost" style={{ padding: "6px 10px", fontSize: 12 }} onClick={logout}>Wyloguj</button>
+                  </div>
+                  <div className="row" style={{ marginTop: 10 }}>
+                    <button className={"btn" + (pushOn ? "" : " ghost")} style={{ padding: "7px 12px", fontSize: 12 }} onClick={togglePush}>
+                      {pushOn ? "🔔 Powiadomienia: włączone" : "🔕 Powiadomienia: wyłączone"}
+                    </button>
                   </div>
                 </div>
               </div>
