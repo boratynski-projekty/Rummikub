@@ -458,9 +458,9 @@ export default function GameApp({ userId }: { userId: string }) {
       const seat = roomRef.current?.seats.find((x) => x.id === uid);
       players.current.push({ uid, nick: seat?.nick || "Gracz", profile: seat || {}, tiles: (s.hands?.[uid] || []).length, isTurn: s.turn === uid });
     });
-    // Planszę odbudowujemy: zawsze gdy to NIE moja tura (podgląd na żywo ruchu przeciwnika),
-    // a w mojej turze tylko na jej początku (żeby nie psuć mojego układania).
-    if (!isMyTurn || turnChanged) buildBoard(s.board || []);
+    // Planszę odbudowujemy zawsze, gdy nie jest to moja tura (podgląd ruchu przeciwnika na żywo)
+    // oraz na początku mojej tury. Nie ruszamy jej tylko, gdy aktualnie przeciągam klocek.
+    if (!drag.current && (!isMyTurn || turnChanged)) buildBoard(s.board || []);
     if (!rackLoaded.current) { buildRack((s.hands && s.hands[myId]) || []); rackLoaded.current = true; }
     if (turnChanged) { deadlineActing.current = false; if (isMyTurn) { playedThisTurn.current = false; initHistory(); myTurnAlert(); } }
     curTurnUid.current = s.turn;
@@ -475,7 +475,10 @@ export default function GameApp({ userId }: { userId: string }) {
   function pushBoard() {
     const s = gameState.current; if (!s || s.turn !== meRef.current!.id) return;
     clearTimeout(boardPushT.current);
-    boardPushT.current = setTimeout(() => { supabase.from("game_state").update({ board: serializeBoard() }).eq("table_id", s.table_id); }, 130);
+    boardPushT.current = setTimeout(async () => {
+      const { error } = await supabase.from("game_state").update({ board: serializeBoard() }).eq("table_id", s.table_id);
+      if (error) toast("Błąd synchronizacji planszy: " + error.message);
+    }, 120);
   }
   function tray() { return el("tray"); }
   function melds() { return el("melds"); }
