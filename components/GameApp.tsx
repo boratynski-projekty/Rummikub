@@ -384,7 +384,7 @@ export default function GameApp({ userId }: { userId: string }) {
     // a w mojej turze tylko na jej początku (żeby nie psuć mojego układania).
     if (!isMyTurn || turnChanged) buildBoard(s.board || []);
     if (!rackLoaded.current) { buildRack((s.hands && s.hands[myId]) || []); rackLoaded.current = true; }
-    if (turnChanged && isMyTurn) { playedThisTurn.current = false; myTurnAlert(); }
+    if (turnChanged) { resetRoundTimer(); if (isMyTurn) { playedThisTurn.current = false; myTurnAlert(); } }
     curTurnUid.current = s.turn;
     tidy(); syncTurnUI();
     if (s.winner && endedFor.current !== s.winner) { endedFor.current = s.winner; stopTimer(); recordResult(s.winner === myId); setEndBanner({ won: s.winner === myId }); }
@@ -466,13 +466,14 @@ export default function GameApp({ userId }: { userId: string }) {
   function syncTurnUI() {
     const my = turn.current === 0; const yl = el("youlabel"); if (!yl) return;
     yl.classList.toggle("off", !my); yl.innerHTML = (my ? "Twoja kolej" : "Czekaj na swój ruch") + ' · <span id="count">' + tray().children.length + "</span> klocków";
-    (el("draw") as HTMLButtonElement).disabled = !my; (el("sort") as HTMLButtonElement).disabled = false;
+    // dobieranie możliwe tylko, jeśli nic jeszcze nie wyłożyłeś w tej turze
+    (el("draw") as HTMLButtonElement).disabled = !my || playedThisTurn.current; (el("sort") as HTMLButtonElement).disabled = false;
     const b = boardState(); const newPts = b.points - committedPoints();
     let canEnd = my && playedThisTurn.current && b.complete;
     if (my && !entered.current) canEnd = canEnd && newPts >= 30;
     (el("endturn") as HTMLButtonElement).disabled = !canEnd;
     setEntryInfo(my && !entered.current ? { points: newPts, canClear: playedThisTurn.current, complete: b.complete } : null);
-    renderOpps(); resetRoundTimer();
+    renderOpps();
   }
   async function commitTurn() {
     const s = gameState.current; if (!s) return; const myId = meRef.current!.id;
@@ -494,12 +495,23 @@ export default function GameApp({ userId }: { userId: string }) {
   }
   async function drawTile() {
     const s = gameState.current; if (!s) return; const myId = meRef.current!.id; if (s.turn !== myId) return;
+    if (playedThisTurn.current) return toast("Nie możesz dobierać po wyłożeniu klocków (najpierw zakończ turę lub sprzątnij)");
     const pool = [...(s.pool || [])]; let hands = s.hands;
     if (pool.length) { const t = pool.pop(); hands = { ...s.hands, [myId]: [...(s.hands[myId] || []), t] }; tray().appendChild(mkTileObj(t)); tidy(); } else toast("Brak klocków w puli");
     const order: string[] = s.turn_order; const nextUid = order[(order.indexOf(myId) + 1) % order.length];
     await supabase.from("game_state").update({ pool, hands, turn: nextUid }).eq("table_id", s.table_id);
   }
-  function setupTimer(mode: string) { stopTimer(); const tEl = el("timer"); if (mode === "none") { roundTime.current = null; tEl.textContent = "⏱ bez limitu"; tEl.classList.remove("low"); return; } roundTime.current = +mode; let s = roundTime.current; const tick = () => { tEl.textContent = "⏱ 0:" + String(s).padStart(2, "0"); tEl.classList.toggle("low", s <= 10); if (s <= 0) { if (turn.current === 0) drawTile(); return; } s--; }; tick(); timerInt.current = setInterval(tick, 1000); (tEl as any)._reset = () => { s = roundTime.current!; }; }
+  function setupTimer(mode: string) { stopTimer(); const tEl = el("timer"); if (mode === "none") { roundTime.current = null; tEl.textContent = "⏱ bez limitu"; tEl.classList.remove("low"); return; } roundTime.current = +mode; let s = roundTime.current; const tick = () => { tEl.textContent = "⏱ 0:" + String(s).padStart(2, "0"); tEl.classList.toggle("low", s <= 10); if (s <= 0) { if (turn.current === 0) timeoutTurn(); return; } s--; }; tick(); timerInt.current = setInterval(tick, 1000); (tEl as any)._reset = () => { s = roundTime.current!; }; }
+  function timeoutTurn() {
+    if (turn.current !== 0) return;
+    // niekompletne / niepoprawne układy wracają do ręki
+    melds().querySelectorAll<HTMLElement>(".meld").forEach((m) => { const a = tilesOf(m); if (a.length < 3 || !validMeld(a)) m.querySelectorAll<HTMLElement>(".tile").forEach((t) => tray().appendChild(t)); });
+    tidy();
+    const b = boardState(); const newPts = b.points - committedPoints();
+    const made = b.count > 0 && b.complete && (entered.current ? playedThisTurn.current : newPts >= 30);
+    if (made) commitTurn();                 // poprawne układy zostają, tura się kończy
+    else { clearTilesToRack(); drawTile(); } // nic ważnego nie wyłożono → wszystko wraca + dobranie
+  }
   function resetRoundTimer() { const tEl = el("timer"); if (tEl && (tEl as any)._reset) (tEl as any)._reset(); }
   function stopTimer() { if (timerInt.current) clearInterval(timerInt.current); timerInt.current = null; }
   function doSort() { const t = tray(); const ts = [...t.children].filter((x) => x.classList.contains("tile")) as HTMLElement[]; ts.sort((a, b) => COLORS.indexOf(a.dataset.c!) - COLORS.indexOf(b.dataset.c!) || (+a.dataset.n! - +b.dataset.n!)); ts.forEach((x) => t.appendChild(x)); }

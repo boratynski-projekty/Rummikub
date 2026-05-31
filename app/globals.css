@@ -74,7 +74,7 @@ input:focus,select:focus{border-color:var(--pomaranczowy);}
 .gametable{flex:1;background:var(--felt);background-image:radial-gradient(ellipse at center,var(--felt) 0%,var(--felt-d) 100%);padding:10px;overflow:auto;position:relative;}
 .hint{position:absolute;inset:0;display:grid;place-items:center;color:rgba(255,255,255,.25);font-size:15px;pointer-events:none;text-align:center;padding:20px;}
 .melds{display:flex;flex-wrap:wrap;gap:14px;align-content:flex-start;min-height:100%;}
-.meld{display:flex;gap:3px;padding:6px;border-radius:10px;background:rgba(0,0,0,.12);min-height:62px;min-width:54px;align-items:center;transition:background .15s;}
+.meld{display:flex;gap:3px;padding:6px 30px 6px 6px;border-radius:10px;background:rgba(0,0,0,.12);min-height:62px;min-width:54px;align-items:center;transition:background .15s;}
 .meld.bad{background:rgba(216,35,42,.35);outline:2px solid var(--czerwony);}
 .rack{background:var(--czarny);border-top:3px solid var(--pomaranczowy);padding:8px;}
 .rack.myturn{animation:rackpulse .8s ease-in-out 3;}
