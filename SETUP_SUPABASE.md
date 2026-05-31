@@ -49,6 +49,7 @@ create table if not exists profiles (
   status text not null default 'on',
   wins int not null default 0,
   games int not null default 0,
+  last_seen timestamptz default now(),
   created_at timestamptz default now()
 );
 
@@ -259,6 +260,7 @@ alter publication supabase_realtime add table table_invites;
 alter publication supabase_realtime add table friend_requests;
 alter publication supabase_realtime add table messages;
 alter publication supabase_realtime add table game_state;
+alter publication supabase_realtime add table profiles;
 ```
 
 > Jeśli przy sekcji REALTIME pojawi się błąd „table is already member of publication", zignoruj go

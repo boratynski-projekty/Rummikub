@@ -89,7 +89,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const ids = rows.map((r: any) => (r.from_user === uid ? r.to_user : r.from_user));
     let list: (Profile & { reqId?: string })[] = [];
     if (ids.length) {
-      const { data: profs } = await supabase.from("profiles").select("id,nick,code,avatar_url,status,wins,games").in("id", ids);
+      const { data: profs } = await supabase.from("profiles").select("id,nick,code,avatar_url,status,wins,games,last_seen").in("id", ids);
       list = (profs || []).map((p: any) => ({ ...p, reqId: (rows.find((r: any) => r.from_user === p.id || r.to_user === p.id) || {}).id }));
     }
     friendsRef.current = list; setFriends(list);
@@ -100,7 +100,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const { data } = await supabase.from("friend_requests").select("*").eq("to_user", uid).eq("status", "pending");
     const reqs = data || [];
     if (!reqs.length) { setRequests([]); return; }
-    const { data: profs } = await supabase.from("profiles").select("id,nick,code,avatar_url,status,wins,games").in("id", reqs.map((r: any) => r.from_user));
+    const { data: profs } = await supabase.from("profiles").select("id,nick,code,avatar_url,status,wins,games,last_seen").in("id", reqs.map((r: any) => r.from_user));
     setRequests(reqs.map((r: any) => ({ id: r.id, from: (profs || []).find((p: any) => p.id === r.from_user) as Profile })).filter((x: any) => x.from));
   }, [supabase]);
 
@@ -145,7 +145,10 @@ export default function GameApp({ userId }: { userId: string }) {
       .on("postgres_changes", { event: "*", schema: "public", table: "game_tables" }, () => loadTables())
       .on("postgres_changes", { event: "*", schema: "public", table: "table_invites", filter: `user_id=eq.${uid}` }, () => { loadTables().then(checkInvitePopup); })
       .subscribe();
-    baseChans.current = [fr, tb];
+    const pr = supabase.channel("profiles-" + uid)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles" }, () => { loadFriends(); if (roomRef.current) refreshRoom(); })
+      .subscribe();
+    baseChans.current = [fr, tb, pr];
   }
 
   /* ===== PROFIL: nick / status / avatar / wyloguj ===== */
@@ -159,7 +162,15 @@ export default function GameApp({ userId }: { userId: string }) {
     if (!meRef.current) return;
     if (meRef.current.status === s) return;
     const np = { ...meRef.current, status: s }; meRef.current = np; setMe(np);
-    supabase.from("profiles").update({ status: s }).eq("id", np.id);
+    supabase.from("profiles").update({ status: s, last_seen: new Date().toISOString() }).eq("id", np.id);
+  }
+  // efektywny status z uwzględnieniem aktywności (brak heartbeat > 65s => offline)
+  function displayStatus(p: any): Status {
+    if (!p) return "off";
+    if (p.status === "inv") return "inv";
+    if (p.status === "off") return "off";
+    if (p.last_seen && Date.now() - new Date(p.last_seen).getTime() > 65000) return "off";
+    return (p.status as Status) || "off";
   }
   function setStatusMode(mode: "auto" | "inv") {
     statusMode.current = mode;
@@ -221,7 +232,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const r = roomRef.current; if (!r) return;
     const { data: mem } = await supabase.from("table_members").select("*").eq("table_id", r.table.id);
     const ids = (mem || []).map((m: any) => m.user_id);
-    const { data: profs } = ids.length ? await supabase.from("profiles").select("id,nick,code,avatar_url,status,wins,games").in("id", ids) : { data: [] };
+    const { data: profs } = ids.length ? await supabase.from("profiles").select("id,nick,code,avatar_url,status,wins,games,last_seen").in("id", ids) : { data: [] };
     const uid = meRef.current!.id;
     const seats: Seat[] = (mem || []).map((m: any) => { const p: any = (profs || []).find((x: any) => x.id === m.user_id) || { nick: "?" }; return { ...p, id: m.user_id, ready: m.ready, owner: m.user_id === r.table.host, me: m.user_id === uid }; });
     const nr = { ...r, seats }; roomRef.current = nr; setRoom(nr);
@@ -400,7 +411,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const box = el("opponents"); if (!box) return;
     box.innerHTML = players.current.slice(1).map((o: any) => { const p = o.profile || {};
       const av = p.avatar_url ? `<img src="${p.avatar_url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">` : esc(o.nick).slice(0, 2).toUpperCase();
-      return `<div class="opp ${o.isTurn ? "turn" : ""}"><div class="avatar" style="width:34px;height:34px;background:${AVCOL[COLORS[(p.code ? p.code.charCodeAt(3) : 0) % 4]]}">${av}<span class="dot ${p.status || "on"}"></span></div><div class="meta"><div class="nick">${esc(o.nick)}</div><div class="tiles">${o.tiles} klocków</div></div></div>`; }).join("");
+      return `<div class="opp ${o.isTurn ? "turn" : ""}"><div class="avatar" style="width:34px;height:34px;background:${AVCOL[COLORS[(p.code ? p.code.charCodeAt(3) : 0) % 4]]}">${av}<span class="dot ${displayStatus(p)}"></span></div><div class="meta"><div class="nick">${esc(o.nick)}</div><div class="tiles">${o.tiles} klocków</div></div></div>`; }).join("");
   }
   function meldPoints(arr: { n: number | null; c: string; joker: boolean }[]) {
     const real = arr.filter((t) => !t.joker); if (!real.length) return 0;
@@ -493,6 +504,27 @@ export default function GameApp({ userId }: { userId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /* ===== HEARTBEAT + ODŚWIEŻANIE statusów / zaproszeń ===== */
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    // heartbeat: dopóki karta widoczna i tryb auto, odświeżaj last_seen
+    const hb = setInterval(() => {
+      if (meRef.current && statusMode.current === "auto" && document.visibilityState === "visible")
+        supabase.from("profiles").update({ last_seen: new Date().toISOString() }).eq("id", meRef.current.id);
+    }, 25000);
+    // re-render co 20s, by przeliczyć „offline po nieaktywności"
+    const tick = setInterval(() => setTick((t) => t + 1), 20000);
+    return () => { clearInterval(hb); clearInterval(tick); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    // polling listy stołów/zaproszeń w lobby (fallback, gdyby realtime nie dochodził)
+    if (view !== "lobby") return;
+    const iv = setInterval(() => { loadTables(); loadRequests(); }, 6000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
   /* ===== PWA ===== */
   useEffect(() => {
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -577,7 +609,7 @@ export default function GameApp({ userId }: { userId: string }) {
               <div className="sec"><h3>Zaproszenia do znajomych</h3>
                 {requests.map((r) => (
                   <div className="friend" key={r.id}>
-                    <Avatar p={r.from} size={38} status />
+                    <Avatar p={{ ...r.from, status: displayStatus(r.from) }} size={38} status />
                     <div className="grow"><div className="nick">{r.from.nick}</div><div className="sub">{r.from.code} chce Cię dodać</div></div>
                     <button className="btn blue" style={{ padding: "7px 10px", fontSize: 12 }} onClick={() => acceptReq(r.id)}>Akceptuj</button>
                     <button className="btn ghost" style={{ padding: "7px 10px", fontSize: 12 }} onClick={() => declineReq(r.id)}>Odrzuć</button>
@@ -590,8 +622,8 @@ export default function GameApp({ userId }: { userId: string }) {
               {friends.length === 0 ? <div className="empty">Brak znajomych. Dodaj kogoś po kodzie powyżej.</div> :
                 friends.map((f) => (
                   <div className="friend" key={f.id}>
-                    <Avatar p={f} size={38} status />
-                    <div className="grow"><div className="nick">{f.nick}</div><div className="sub">{f.code} · {statusLabels[f.status]}</div></div>
+                    <Avatar p={{ ...f, status: displayStatus(f) }} size={38} status />
+                    <div className="grow"><div className="nick">{f.nick}</div><div className="sub">{f.code} · {statusLabels[displayStatus(f)]}</div></div>
                     <button className="btn ghost" style={{ padding: "7px 10px", fontSize: 12 }} onClick={() => removeFriend(f.reqId!, f.nick)}>Usuń</button>
                   </div>
                 ))}
@@ -620,7 +652,7 @@ export default function GameApp({ userId }: { userId: string }) {
             <div className="sec"><h3>Gracze przy stole</h3>
               {room.seats.map((s) => (
                 <div className="seat" key={s.id}>
-                  <Avatar p={s} size={40} status />
+                  <Avatar p={{ ...s, status: displayStatus(s) }} size={40} status />
                   <div className="grow"><div className="nick">{s.nick} {s.owner && <span className="crown">👑</span>}{s.me && <span className="sub"> (Ty)</span>}</div><div className={s.ready ? "ready" : "waiting"}>{s.ready ? "✓ Gotowy" : "⏳ Czeka…"}</div></div>
                   {room.iAmOwner && !s.me && <SeatMenu onKick={() => kick(s.id, false)} onBan={() => kick(s.id, true)} />}
                 </div>
@@ -725,7 +757,7 @@ export default function GameApp({ userId }: { userId: string }) {
               <div className="field"><label>Zaproś znajomych</label>
                 {friends.length === 0 ? <div className="empty">Najpierw dodaj znajomych.</div> : friends.map((f) => (
                   <label className="pick" key={f.id}>
-                    <Avatar p={f} size={34} status />
+                    <Avatar p={{ ...f, status: displayStatus(f) }} size={34} status />
                     <span className="grow" style={{ fontWeight: 600 }}>{f.nick}</span>
                     <input type="checkbox" checked={invited.has(f.id)} onChange={(e) => { const n = new Set(invited); e.target.checked ? n.add(f.id) : n.delete(f.id); setInvited(n); }} />
                   </label>
