@@ -490,7 +490,7 @@ export default function GameApp({ userId }: { userId: string }) {
   }
   function mkTileObj(t: any) { return mkTile(t.n, t.c, !!t.j); }
   function newMeld() { const e = document.createElement("div"); e.className = "meld"; melds().appendChild(e); return e; }
-  function buildBoard(board: any[]) { melds().innerHTML = ""; board.forEach((m: any[]) => { const e = newMeld(); m.forEach((t) => e.appendChild(mkTileObj(t))); }); }
+  function buildBoard(board: any[]) { melds().innerHTML = ""; board.forEach((m: any[]) => { const e = newMeld(); m.forEach((t) => { const el2 = mkTileObj(t); if (t.f) el2.dataset.fresh = "1"; e.appendChild(el2); }); }); }
   function buildRack(hand: any[]) { tray().innerHTML = ""; hand.forEach((t) => tray().appendChild(mkTileObj(t))); }
   function serializeBoard() { return [...melds().querySelectorAll(".meld")].map((m) => tilesOf(m).map((t) => ({ n: t.n, c: t.c, j: t.joker }))); }
   function serializeRack() { return [...tray().querySelectorAll<HTMLElement>(".tile")].map((t) => ({ n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c, j: t.dataset.joker === "1" })); }
@@ -500,7 +500,10 @@ export default function GameApp({ userId }: { userId: string }) {
     return base.reduce((sum: number, m: any[]) => sum + meldPoints(m.map((t: any) => ({ n: t.n, c: t.c, joker: t.j }))), 0);
   }
   // ===== historia ruchów (cofanie / reset w obrębie tury) =====
-  function snapshot() { return { board: serializeBoard(), rack: serializeRack() }; }
+  function snapshot() {
+    const board = [...melds().querySelectorAll(".meld")].map((m) => [...m.querySelectorAll<HTMLElement>(".tile")].map((t) => ({ n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c, j: t.dataset.joker === "1", f: t.dataset.fresh === "1" })));
+    return { board, rack: serializeRack() };
+  }
   function initHistory() { history.current = [snapshot()]; }
   function pushHistory() { history.current.push(snapshot()); }
   function restoreSnap(s: { board: any[]; rack: any[] }) {
@@ -561,15 +564,15 @@ export default function GameApp({ userId }: { userId: string }) {
     let changed = false;
     if (loc) {
       let cont: any = loc.cont; if (cont === "NEW") cont = newMeld();
-      if (cont === tray() && fromMeld.current) {
-        fromMeld.current.appendChild(d); // blokada: nie zdejmujemy klocków ze stołu
-        toast("Klocków ze stołu nie można brać na tabliczkę");
+      if (cont === tray() && fromMeld.current && d.dataset.fresh !== "1") {
+        fromMeld.current.appendChild(d); // blokada: cudze/zatwierdzone klocki zostają na stole
+        toast("Możesz zdjąć tylko klocki położone w tej turze");
       } else {
         if (loc.before && loc.before !== c) cont.insertBefore(d, loc.before); else cont.appendChild(d);
         if (cont.classList && cont.classList.contains("meld")) {
           if (!validMeld(tilesOf(cont))) { cont.classList.add("bad"); const ref = cont; setTimeout(() => ref.classList.remove("bad"), 350); if (fromMeld.current) fromMeld.current.appendChild(d); else tray().appendChild(d); }
-          else { changed = true; if (fromMeld.current !== cont) playedThisTurn.current = true; }
-        } else { changed = true; } // przekładanie na tabliczce
+          else { changed = true; if (fromMeld.current !== cont) { d.dataset.fresh = "1"; playedThisTurn.current = true; } } // klocek z ręki -> oznacz jako z tej tury
+        } else { changed = true; if (cont === tray()) delete d.dataset.fresh; } // wrócił na tabliczkę
       }
     }
     tidy(); syncTurnUI();
