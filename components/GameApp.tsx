@@ -540,9 +540,17 @@ export default function GameApp({ userId }: { userId: string }) {
     if (arr.length <= 1) return true; const real = arr.filter((t) => !t.joker); if (real.length === 0) return true;
     const sameVal = real.every((t) => t.n === real[0].n);
     if (sameVal) { const cols = real.map((t) => t.c); if (new Set(cols).size !== cols.length) return false; return arr.length <= 4; }
-    if (!real.every((t) => t.c === real[0].c)) return false; let prev: number | null = null;
-    for (const t of arr) { if (t.joker) { if (prev != null) prev++; continue; } if (prev != null && t.n !== prev + 1) return false; prev = t.n; }
-    return arr.length <= 13 && arr.every((t) => t.joker || (t.n! >= 1 && t.n! <= 13));
+    if (!real.every((t) => t.c === real[0].c)) return false;
+    // wyznacz wartość pod pierwszym kafelkiem serii (uwzględniając jokery przed nim)
+    let anchorIdx = arr.findIndex((t) => !t.joker);
+    const start = (arr[anchorIdx].n as number) - anchorIdx;
+    // każdy kolejny kafelek (też joker) musi mieć wartość start+i w zakresie 1..13, a realne kafelki muszą się zgadzać
+    for (let i = 0; i < arr.length; i++) {
+      const val = start + i;
+      if (val < 1 || val > 13) return false;            // joker po 13 lub przed 1 → niedozwolone
+      if (!arr[i].joker && arr[i].n !== val) return false;
+    }
+    return arr.length <= 13;
   }
   function attachDrag(tile: HTMLElement) {
     tile.addEventListener("pointerdown", (e) => { if (turn.current !== 0 && !tile.closest(".tray")) return; e.preventDefault(); drag.current = tile; fromMeld.current = tile.closest(".meld"); tile.classList.add("dragging"); const g = tile.cloneNode(true) as HTMLElement; g.classList.add("ghosttile"); g.classList.remove("dragging"); document.body.appendChild(g); ghost.current = g; const c = document.createElement("div"); c.className = "caret"; caret.current = c; tile.setPointerCapture(e.pointerId); moveGhost(e); });
