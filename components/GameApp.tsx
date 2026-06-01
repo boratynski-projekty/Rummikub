@@ -276,15 +276,16 @@ export default function GameApp({ userId }: { userId: string }) {
   /* ===== TWORZENIE STOŁU ===== */
   const [createVis, setCreateVis] = useState<"public" | "private">("public");
   const [createTime, setCreateTime] = useState<"none" | "30" | "60">("none");
+  const [createStart, setCreateStart] = useState(14);
   const [invited, setInvited] = useState<Set<string>>(new Set());
   async function openCreate() {
     const { data } = await supabase.from("game_tables").select("id").eq("host", meRef.current!.id).neq("status", "closed");
     if (data && data.length) return toast("Masz już stół — zamknij go, by utworzyć nowy");
-    setCreateVis("public"); setCreateTime("none"); setInvited(new Set()); setCreateOpen(true);
+    setCreateVis("public"); setCreateTime("none"); setCreateStart(14); setInvited(new Set()); setCreateOpen(true);
   }
   async function confirmCreate() {
     const name = (el("tName") as HTMLInputElement).value.trim() || ("Stół " + meRef.current!.nick);
-    const { data: t, error } = await supabase.from("game_tables").insert({ name, visibility: createVis, time_mode: createTime, host: meRef.current!.id, status: "waiting" }).select().single();
+    const { data: t, error } = await supabase.from("game_tables").insert({ name, visibility: createVis, time_mode: createTime, start_tiles: createStart, host: meRef.current!.id, status: "waiting" }).select().single();
     if (error) return toast("Błąd: " + error.message);
     await supabase.from("table_members").insert({ table_id: (t as any).id, user_id: meRef.current!.id, ready: false });
     if (createVis === "private" && invited.size) { await supabase.from("table_invites").insert([...invited].map((uid) => ({ table_id: (t as any).id, user_id: uid }))); [...invited].forEach((uid) => pushInvite(uid, name)); }
@@ -416,7 +417,8 @@ export default function GameApp({ userId }: { userId: string }) {
     if (!gs && r.iAmOwner) {
       const order = r.seats.map((s) => s.id);
       const deck = buildDeck(); const hands: Record<string, any[]> = {}; const ent: Record<string, boolean> = {};
-      order.forEach((uid) => { hands[uid] = deck.splice(0, 14); ent[uid] = false; });
+      const startN = Math.min(22, Math.max(14, Number((r.table as any).start_tiles) || 14));
+      order.forEach((uid) => { hands[uid] = deck.splice(0, startN); ent[uid] = false; });
       const base: any = { table_id: r.table.id, board: [], hands, pool: deck, turn_order: order, turn: order[0], entered: ent, winner: null };
       let resp = await supabase.from("game_state").insert({ ...base, ...dlField() }).select().single();
       if (resp.error) { // np. brak kolumny turn_deadline — spróbuj bez niej
@@ -981,6 +983,10 @@ export default function GameApp({ userId }: { userId: string }) {
             <div className="field"><label>Tryb czasu</label><div className="seg">
               {(["none", "30", "60"] as const).map((t) => <button key={t} className={createTime === t ? "sel" : ""} onClick={() => setCreateTime(t)}>{t === "none" ? "Bez limitu" : t + "s/runda"}</button>)}
             </div></div>
+            <div className="field"><label>Klocki na start (na gracza)</label>
+              <select value={createStart} onChange={(e) => setCreateStart(Number(e.target.value))}>
+                {Array.from({ length: 9 }, (_, i) => 14 + i).map((n) => <option key={n} value={n}>{n} klocków{n === 14 ? " (domyślnie)" : ""}</option>)}
+              </select></div>
             {createVis === "private" && (
               <div className="field"><label>Zaproś znajomych</label>
                 {friends.length === 0 ? <div className="empty">Najpierw dodaj znajomych.</div> : friends.map((f) => (

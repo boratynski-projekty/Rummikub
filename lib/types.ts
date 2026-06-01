@@ -15,6 +15,7 @@ export interface GameTable {
   name: string;
   visibility: "public" | "private";
   time_mode: "none" | "30" | "60";
+  start_tiles?: number;
   host: string;
   status: "waiting" | "playing" | "closed";
   created_at: string;

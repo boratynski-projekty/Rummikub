@@ -67,6 +67,7 @@ create table if not exists game_tables (
   name text not null,
   visibility text not null default 'public',
   time_mode text not null default 'none',
+  start_tiles int not null default 14,
   host uuid not null references profiles(id) on delete cascade,
   status text not null default 'waiting',
   created_at timestamptz default now()
