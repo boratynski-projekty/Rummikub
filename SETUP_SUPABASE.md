@@ -242,6 +242,7 @@ create table if not exists game_state (
   entered jsonb not null default '{}',
   winner uuid,
   turn_deadline timestamptz,
+  rematch jsonb not null default '{}',
   updated_at timestamptz default now()
 );
 alter table game_state enable row level security;

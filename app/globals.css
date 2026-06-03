@@ -97,6 +97,7 @@ input:focus,select:focus{border-color:var(--pomaranczowy);}
 .chatbtn{position:relative;background:var(--blekitny);color:#fff;border:none;border-radius:10px;padding:6px 10px;font-size:12px;font-weight:800;}
 .chatbtn.alert{animation:wiggle 1s ease-in-out infinite;}
 .badge{position:absolute;top:-7px;right:-7px;min-width:19px;height:19px;padding:0 4px;border-radius:10px;background:var(--czerwony);color:#fff;font-size:11px;font-weight:800;display:grid;place-items:center;border:2px solid #000;}
+.winbadge{position:absolute;top:-10px;left:-8px;font-size:16px;z-index:3;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6));animation:pulsebar 1s ease-in-out infinite;}
 .chatcard{display:flex;flex-direction:column;height:min(80dvh,560px);width:min(94vw,460px);}
 .chatlog{flex:1;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px 2px;margin:10px 0;}
 .msgrow{display:flex;gap:8px;align-items:flex-end;max-width:88%;}

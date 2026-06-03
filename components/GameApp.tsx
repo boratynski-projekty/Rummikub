@@ -47,7 +47,8 @@ export default function GameApp({ userId }: { userId: string }) {
   const chatOpenRef = useRef(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [atTableOpen, setAtTableOpen] = useState(false);
-  const [endBanner, setEndBanner] = useState<{ won: boolean } | null>(null);
+  const [winnerUid, setWinnerUid] = useState<string | null>(null);
+  const [rematchReady, setRematchReady] = useState(false);
   const [entryInfo, setEntryInfo] = useState<{ points: number; canClear: boolean; complete: boolean } | null>(null);
   const [installVisible, setInstallVisible] = useState(false);
   const [installHint, setInstallHint] = useState("Dodaj na ekran główny telefonu");
@@ -467,7 +468,31 @@ export default function GameApp({ userId }: { userId: string }) {
     if (turnChanged) { deadlineActing.current = false; if (isMyTurn) { playedThisTurn.current = false; initHistory(); myTurnAlert(); } }
     curTurnUid.current = s.turn;
     tidy(); syncTurnUI();
-    if (s.winner && endedFor.current !== s.winner) { endedFor.current = s.winner; stopTimer(); recordResult(s.winner === myId); setEndBanner({ won: s.winner === myId }); }
+    setWinnerUid(s.winner || null);
+    setRematchReady(!!(s.rematch && s.rematch[myId]));
+    if (s.winner) {
+      if (endedFor.current !== s.winner) { endedFor.current = s.winner; stopTimer(); recordResult(s.winner === myId); }
+      // gdy wszyscy obecni gracze gotowi na rewanż → host rozdaje od nowa
+      if (roomRef.current?.iAmOwner) {
+        const present = roomRef.current.seats.map((x) => x.id);
+        const r = s.rematch || {};
+        if (present.length >= 1 && present.every((id) => r[id])) startRematch();
+      }
+    } else { endedFor.current = null; }
+  }
+  async function toggleRematch() {
+    const s = gameState.current; if (!s) return; const myId = meRef.current!.id;
+    const r = { ...(s.rematch || {}) }; r[myId] = !r[myId];
+    await supabase.from("game_state").update({ rematch: r }).eq("table_id", s.table_id);
+  }
+  async function startRematch() {
+    const r = roomRef.current!; if (!r.iAmOwner) return;
+    const order = r.seats.map((s) => s.id);
+    const deck = buildDeck(); const hands: Record<string, any[]> = {}; const ent: Record<string, boolean> = {};
+    const startN = Math.min(22, Math.max(14, Number((r.table as any).start_tiles) || 14));
+    order.forEach((uid) => { hands[uid] = deck.splice(0, startN); ent[uid] = false; });
+    rackLoaded.current = false; endedFor.current = null;
+    await supabase.from("game_state").update({ board: [], hands, pool: deck, turn_order: order, turn: order[0], entered: ent, winner: null, rematch: {}, ...dlField() }).eq("table_id", r.table.id);
   }
   function myTurnAlert() {
     const rk = document.querySelector(".rack"); if (rk) { rk.classList.add("myturn"); setTimeout(() => rk.classList.remove("myturn"), 2600); }
@@ -478,7 +503,9 @@ export default function GameApp({ userId }: { userId: string }) {
     const s = gameState.current; if (!s || s.turn !== meRef.current!.id) return;
     clearTimeout(boardPushT.current);
     boardPushT.current = setTimeout(async () => {
-      const { error } = await supabase.from("game_state").update({ board: serializeBoard() }).eq("table_id", s.table_id);
+      // wysyłamy też podgląd ręki, żeby u innych licznik klocków zmieniał się na żywo
+      const myId = meRef.current!.id; const hands = { ...s.hands, [myId]: serializeRack() };
+      const { error } = await supabase.from("game_state").update({ board: serializeBoard(), hands }).eq("table_id", s.table_id);
       if (error) toast("Błąd synchronizacji planszy: " + error.message);
     }, 120);
   }
@@ -569,29 +596,84 @@ export default function GameApp({ userId }: { userId: string }) {
   function drop(e: PointerEvent) {
     const loc = locate(e.clientX, e.clientY); const d = drag.current!; d.classList.remove("dragging"); const c = caret.current!; if (c.parentNode) c.remove();
     autoVel.current = 0; if (scrollRAF.current) { cancelAnimationFrame(scrollRAF.current); scrollRAF.current = null; }
-    let changed = false;
+    let changed = false; let destMeld: HTMLElement | null = null;
     if (loc) {
       let cont: any = loc.cont; if (cont === "NEW") cont = newMeld();
+      if (cont !== tray()) destMeld = cont;
       if (cont === tray() && fromMeld.current && d.dataset.fresh !== "1") {
         fromMeld.current.appendChild(d); // blokada: cudze/zatwierdzone klocki zostają na stole
         toast("Możesz zdjąć tylko klocki położone w tej turze");
       } else {
         if (loc.before && loc.before !== c) cont.insertBefore(d, loc.before); else cont.appendChild(d);
         if (cont.classList && cont.classList.contains("meld")) {
-          if (!validMeld(tilesOf(cont))) { cont.classList.add("bad"); const ref = cont; setTimeout(() => ref.classList.remove("bad"), 350); if (fromMeld.current) fromMeld.current.appendChild(d); else tray().appendChild(d); }
+          if (!validMeld(tilesOf(cont))) {
+            // próba rozdzielenia ciągu na dwa w miejscu wrzuconego klocka
+            if (trySplitMeld(cont, d)) { changed = true; if (fromMeld.current !== cont) { d.dataset.fresh = "1"; } playedThisTurn.current = true; }
+            else { cont.classList.add("bad"); const ref = cont; setTimeout(() => ref.classList.remove("bad"), 350); if (fromMeld.current) fromMeld.current.appendChild(d); else tray().appendChild(d); }
+          }
           else { changed = true; if (fromMeld.current !== cont) { d.dataset.fresh = "1"; playedThisTurn.current = true; } } // klocek z ręki -> oznacz jako z tej tury
         } else { changed = true; if (cont === tray()) delete d.dataset.fresh; } // wrócił na tabliczkę
       }
     }
+    // po wyjęciu klocka ze źródłowego ciągu — rozdziel go w miejscu powstałej dziury
+    if (changed && fromMeld.current && fromMeld.current !== destMeld && fromMeld.current.isConnected) splitAtGaps(fromMeld.current);
     tidy(); syncTurnUI();
     if (changed) { pushHistory(); pushBoard(); }
     ghost.current?.remove(); ghost.current = null; drag.current = null; caret.current = null; fromMeld.current = null;
+  }
+  // Rozdziel ciąg na dwa w miejscu wrzuconego klocka `d`.
+  // Część PRZED d (z d na końcu) zostaje w tym meldzie; część OD następnego klocka idzie do nowego meldu.
+  // Oba muszą być poprawne (dopuszczamy 2-klockowe — wtedy tura i tak się nie zakończy, ale układ widać).
+  function trySplitMeld(meld: HTMLElement, d: HTMLElement): boolean {
+    const tiles = [...meld.querySelectorAll<HTMLElement>(".tile")];
+    const idx = tiles.indexOf(d);
+    if (idx <= 0 || idx >= tiles.length - 1) return false; // wrzucony klocek musi być w środku
+    const toArr = (els: HTMLElement[]) => els.map((t) => ({ n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c!, joker: t.dataset.joker === "1" }));
+    // wariant A: d zaczyna prawą część (7-8-9 | 9-10-11-12)
+    const aL = tiles.slice(0, idx), aR = tiles.slice(idx);
+    // wariant B: d kończy lewą część
+    const bL = tiles.slice(0, idx + 1), bR = tiles.slice(idx + 1);
+    const ok = (els: HTMLElement[]) => els.length >= 2 && validMeld(toArr(els));
+    let L: HTMLElement[] | null = null, R: HTMLElement[] | null = null;
+    if (ok(aL) && ok(aR)) { L = aL; R = aR; }
+    else if (ok(bL) && ok(bR)) { L = bL; R = bR; }
+    if (!L || !R) return false;
+    const nm = newMeld();
+    R.forEach((t) => nm.appendChild(t)); // prawa część do nowego meldu; lewa zostaje
+    return true;
+  }
+  // Po wyjęciu klocka ze środka ciągu rozetnij meld w miejscu „dziury".
+  // Dotyczy tylko serii (ten sam kolor, rosnące wartości); grup nie ruszamy.
+  function splitAtGaps(meld: HTMLElement) {
+    const tiles = [...meld.querySelectorAll<HTMLElement>(".tile")];
+    if (tiles.length < 2) return;
+    const real = tiles.filter((t) => t.dataset.joker !== "1");
+    if (real.length < 2) return;
+    // grupa (te same wartości) — nie dotyczy
+    if (real.every((t) => t.dataset.n === real[0].dataset.n)) return;
+    // jeden kolor? jeśli nie, to nie jest seria — zostaw
+    if (!real.every((t) => t.dataset.c === real[0].dataset.c)) return;
+    // znajdź punkty cięcia: tam gdzie różnica wartości > 1 (z uwzględnieniem jokerów jako +1)
+    const segments: HTMLElement[][] = [];
+    let cur: HTMLElement[] = [];
+    let prev: number | null = null;
+    for (const t of tiles) {
+      if (t.dataset.joker === "1") { cur.push(t); if (prev != null) prev++; continue; }
+      const v = +t.dataset.n!;
+      if (prev != null && v !== prev + 1) { segments.push(cur); cur = []; }
+      cur.push(t); prev = v;
+    }
+    if (cur.length) segments.push(cur);
+    if (segments.length <= 1) return; // brak dziury
+    // pierwszy segment zostaje w obecnym meldzie, kolejne do nowych meldów
+    for (let i = 1; i < segments.length; i++) { const nm = newMeld(); segments[i].forEach((t) => nm.appendChild(t)); }
   }
   function renderOpps() {
     const box = el("opponents"); if (!box) return;
     box.innerHTML = players.current.slice(1).map((o: any) => { const p = o.profile || {};
       const av = p.avatar_url ? `<img src="${p.avatar_url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">` : esc(o.nick).slice(0, 2).toUpperCase();
-      return `<div class="opp ${o.isTurn ? "turn" : ""}"><div class="avatar" style="width:34px;height:34px;background:${AVCOL[COLORS[(p.code ? p.code.charCodeAt(3) : 0) % 4]]}">${av}<span class="dot ${displayStatus(p)}"></span></div><div class="meta"><div class="nick">${esc(o.nick)}</div><div class="tiles">${o.tiles} klocków</div></div></div>`; }).join("");
+      const win = gameState.current?.winner === o.uid ? '<span class="winbadge">🏆</span>' : "";
+      return `<div class="opp ${o.isTurn ? "turn" : ""}"><div class="avatar" style="width:34px;height:34px;background:${AVCOL[COLORS[(p.code ? p.code.charCodeAt(3) : 0) % 4]]}">${av}<span class="dot ${displayStatus(p)}"></span>${win}</div><div class="meta"><div class="nick">${esc(o.nick)}</div><div class="tiles">${o.tiles} klocków</div></div></div>`; }).join("");
   }
   function meldPoints(arr: { n: number | null; c: string; joker: boolean }[]) {
     const real = arr.filter((t) => !t.joker); if (!real.length) return 0;
@@ -648,7 +730,8 @@ export default function GameApp({ userId }: { userId: string }) {
     const pool = [...(s.pool || [])]; let hands = s.hands;
     if (pool.length) { const t = pool.pop(); hands = { ...s.hands, [myId]: [...(s.hands[myId] || []), t] }; tray().appendChild(mkTileObj(t)); tidy(); } else toast("Brak klocków w puli");
     const order: string[] = s.turn_order; const nextUid = order[(order.indexOf(myId) + 1) % order.length];
-    await supabase.from("game_state").update({ pool, hands, turn: nextUid, ...dlField() }).eq("table_id", s.table_id);
+    // zapisz też aktualną (czystą) planszę — istotne po timeoucie, gdy cofnęliśmy niedokończone układy
+    await supabase.from("game_state").update({ pool, hands, board: serializeBoard(), turn: nextUid, ...dlField() }).eq("table_id", s.table_id);
   }
   function newDeadline(): string | null {
     const m = roomRef.current?.table.time_mode; if (!m || m === "none") return null;
@@ -687,13 +770,17 @@ export default function GameApp({ userId }: { userId: string }) {
   }
   function timeoutTurn() {
     if (turn.current !== 0) return;
-    // niekompletne / niepoprawne układy wracają do ręki
-    melds().querySelectorAll<HTMLElement>(".meld").forEach((m) => { const a = tilesOf(m); if (a.length < 3 || !validMeld(a)) m.querySelectorAll<HTMLElement>(".tile").forEach((t) => tray().appendChild(t)); });
-    tidy();
     const b = boardState(); const newPts = b.points - committedPoints();
-    const made = b.count > 0 && b.complete && (entered.current ? playedThisTurn.current : newPts >= 30);
-    if (made) commitTurn();                 // poprawne układy zostają, tura się kończy
-    else { clearTilesToRack(); drawTile(); } // nic ważnego nie wyłożono → wszystko wraca + dobranie
+    // czy WSZYSTKIE układy na stole są poprawne i kompletne (min. 3) + spełniony warunek ruchu/wejścia?
+    const allOk = [...melds().querySelectorAll(".meld")].every((m) => { const a = tilesOf(m); return a.length >= 3 && validMeld(a); });
+    const made = allOk && b.count > 0 && (entered.current ? playedThisTurn.current : newPts >= 30);
+    if (made) { commitTurn(); return; } // wszystko poprawne → zostaje, tura się kończy
+    // cokolwiek jest niedokończone/niepoprawne → przywróć stan z POCZĄTKU tury
+    // (pożyczone klocki wracają na swoje miejsca, własne na tabliczkę — nic obcego nie wpadnie na rękę)
+    const start = history.current[0];
+    if (start) { buildBoard(start.board); buildRack(start.rack); }
+    playedThisTurn.current = false; tidy();
+    drawTile(); // kara: dobranie + przekazanie tury
   }
   function stopTimer() { if (timerInt.current) clearInterval(timerInt.current); timerInt.current = null; }
   function doSort() { const t = tray(); const ts = [...t.children].filter((x) => x.classList.contains("tile")) as HTMLElement[]; ts.sort((a, b) => COLORS.indexOf(a.dataset.c!) - COLORS.indexOf(b.dataset.c!) || (+a.dataset.n! - +b.dataset.n!)); ts.forEach((x) => t.appendChild(x)); }
@@ -934,13 +1021,30 @@ export default function GameApp({ userId }: { userId: string }) {
           <div className="gametable"><div className="hint" id="hint">Przeciągnij klocki z tabliczki tutaj</div><div className="melds" id="melds" /></div>
           <div className="rack">
             <div className="rackbar">
-              <div className="row" style={{ gap: 8 }}><Avatar p={me} size={32} /><div className="you" id="youlabel">Twoja kolej · <span id="count">0</span> klocków</div></div>
-              <button className="btn ghost" id="undo" title="Cofnij ruch" style={{ padding: "8px 11px" }} onClick={undoMove}>↶</button>
-              <button className="btn ghost" id="reset" title="Cofnij wszystko" style={{ padding: "8px 11px" }} onClick={resetMoves}>⟲</button>
-              <button className="btn ghost" id="sort" style={{ padding: "8px 12px" }} onClick={doSort}>Sortuj</button>
-              <button className="btn" id="draw" style={{ padding: "8px 12px" }} onClick={drawTile}>Dobierz</button>
-              <button className="btn blue" id="endturn" style={{ padding: "8px 12px", marginLeft: "auto" }} onClick={commitTurn}>Zakończ turę</button>
+              <div className="row" style={{ gap: 8 }}>
+                <div style={{ position: "relative" }}><Avatar p={me} size={32} />{winnerUid === me?.id && <span className="winbadge">🏆</span>}</div>
+                <div className="you" id="youlabel">Twoja kolej · <span id="count">0</span> klocków</div>
+              </div>
+              {winnerUid ? (
+                <button className={"btn" + (rematchReady ? " blue" : "")} style={{ marginLeft: "auto" }} onClick={toggleRematch}>
+                  {rematchReady ? "✓ Gotowy na rewanż (anuluj)" : "🔄 Nowa gra"}
+                </button>
+              ) : (
+                <>
+                  <button className="btn ghost" id="undo" title="Cofnij ruch" style={{ padding: "8px 11px" }} onClick={undoMove}>↶</button>
+                  <button className="btn ghost" id="reset" title="Cofnij wszystko" style={{ padding: "8px 11px" }} onClick={resetMoves}>⟲</button>
+                  <button className="btn ghost" id="sort" style={{ padding: "8px 12px" }} onClick={doSort}>Sortuj</button>
+                  <button className="btn" id="draw" style={{ padding: "8px 12px" }} onClick={drawTile}>Dobierz</button>
+                  <button className="btn blue" id="endturn" style={{ padding: "8px 12px", marginLeft: "auto" }} onClick={commitTurn}>Zakończ turę</button>
+                </>
+              )}
             </div>
+            {winnerUid && (
+              <div className="entrybar" style={{ background: "rgba(57,211,83,.12)", borderColor: "#39d353" }}>
+                <div className="grow"><div style={{ fontWeight: 800, fontSize: 14 }}>{winnerUid === me?.id ? "🎉 Wygrałeś!" : `🏆 Wygrał: ${players.current.find((p:any)=>p.uid===winnerUid)?.nick || "gracz"}`}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>Możesz przejrzeć stół. „Nowa gra" — gdy wszyscy gotowi, rozdamy ponownie.</div></div>
+              </div>
+            )}
             {entryInfo && (
               <div className="entrybar">
                 <div className="grow">
@@ -1047,15 +1151,6 @@ export default function GameApp({ userId }: { userId: string }) {
             <div className="row" style={{ marginTop: 8 }}><button className="btn ghost grow" onClick={() => setConfirmState(null)}>Anuluj</button><button className="btn red grow" onClick={() => { const f = confirmState.onYes; setConfirmState(null); f(); }}>Usuń</button></div>
           </div>
         </div>
-      )}
-
-      {/* END banner */}
-      {endBanner && (
-        <div className="banner"><div className="card" style={{ textAlign: "center" }}>
-          <div className="logo" style={{ fontSize: 22 }}>{endBanner.won ? "🎉 Wygrałeś!" : "Koniec gry"}</div>
-          <p style={{ color: "var(--muted)" }}>{endBanner.won ? "Wyłożyłeś wszystkie klocki. Gratulacje!" : ""}</p>
-          <button className="btn" onClick={() => { setEndBanner(null); if (roomRef.current) { setView("room"); refreshRoom(); } else setView("lobby"); }}>Wróć do stołu</button>
-        </div></div>
       )}
 
       {/* INSTALL */}
