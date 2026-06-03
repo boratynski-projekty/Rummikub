@@ -781,7 +781,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const over = gameOver.current; const my = !over && turn.current === 0;
     yl.classList.toggle("off", !my); yl.innerHTML = (over ? "Koniec gry" : my ? "Twoja kolej" : "Czekaj na swój ruch") + ' · <span id="count">' + tray().children.length + "</span> klocków";
     const draw = el("draw") as HTMLButtonElement | null; if (draw) draw.disabled = !my || playedThisTurn.current;
-    const sort = el("sort") as HTMLButtonElement | null; if (sort) sort.disabled = over;
+    const sort = el("sort") as HTMLButtonElement | null; if (sort) sort.disabled = false;
     const undoBtn = el("undo") as HTMLButtonElement | null; if (undoBtn) undoBtn.disabled = !my || history.current.length <= 1;
     const resetBtn = el("reset") as HTMLButtonElement | null; if (resetBtn) resetBtn.disabled = !my || history.current.length <= 1;
     const b = boardState(); const newPts = b.points - committedPoints();
@@ -897,7 +897,6 @@ export default function GameApp({ userId }: { userId: string }) {
     return result;
   }
   function sortRack(mode: "run" | "group") {
-    if (gameOver.current || turn.current !== 0) return;
     const t = tray(); const tiles = rackTiles();
     const ready = findReadyMelds(tiles, mode);
     const usedIds = new Set(ready.flat().map((x) => x.dataset.id));
