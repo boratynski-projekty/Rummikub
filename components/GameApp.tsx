@@ -49,6 +49,8 @@ export default function GameApp({ userId }: { userId: string }) {
   const [atTableOpen, setAtTableOpen] = useState(false);
   const [winnerUid, setWinnerUid] = useState<string | null>(null);
   const [rematchReady, setRematchReady] = useState(false);
+  const gameOver = useRef(false);
+  const recordedKey = useRef<string | null>(null); // klucz tableId+winner — by nie liczyć zwycięstwa dwa razy
   const [entryInfo, setEntryInfo] = useState<{ points: number; canClear: boolean; complete: boolean } | null>(null);
   const [installVisible, setInstallVisible] = useState(false);
   const [installHint, setInstallHint] = useState("Dodaj na ekran główny telefonu");
@@ -222,7 +224,7 @@ export default function GameApp({ userId }: { userId: string }) {
       Object.keys(state).forEach((k) => { const meta = state[k]?.[0]; if (meta) map[k] = meta.status as Status; });
       setPresence(map);
     });
-    pres.subscribe((st) => { if (st === "SUBSCRIBED") pres.track({ status: trackStatus() }); });
+    pres.subscribe((st: string) => { if (st === "SUBSCRIBED") pres.track({ status: trackStatus() }); });
     presenceCh.current = pres;
     baseChans.current = [fr, tb, pr, pres];
   }
@@ -389,9 +391,13 @@ export default function GameApp({ userId }: { userId: string }) {
   const timerInt = useRef<any>(null);
   const tileId = useRef(0);
   const drag = useRef<HTMLElement | null>(null);
+  const dragGroup = useRef<HTMLElement[]>([]);   // wiele klocków przeciąganych razem
+  const holdTimer = useRef<any>(null);
   const ghost = useRef<HTMLElement | null>(null);
   const caret = useRef<HTMLElement | null>(null);
   const fromMeld = useRef<HTMLElement | null>(null);
+  const downPos = useRef<{ x: number; y: number } | null>(null);
+  const dragging = useRef(false);
   const gameState = useRef<any>(null);
   const gameCh = useRef<any>(null);
   const curTurnUid = useRef<string | null>(null);
@@ -412,7 +418,7 @@ export default function GameApp({ userId }: { userId: string }) {
     return deck;
   }
   async function startGame() {
-    const r = roomRef.current!; setView("game"); playedThisTurn.current = false; endedFor.current = null; rackLoaded.current = false; setEntryInfo(null);
+    const r = roomRef.current!; setView("game"); playedThisTurn.current = false; endedFor.current = null; rackLoaded.current = false; setEntryInfo(null); setWinnerUid(null); setRematchReady(false); gameOver.current = false;
     let { data: gs, error: selErr } = await supabase.from("game_state").select("*").eq("table_id", r.table.id).maybeSingle();
     if (selErr) toast("Błąd odczytu gry: " + selErr.message);
     if (!gs && r.iAmOwner) {
@@ -469,21 +475,28 @@ export default function GameApp({ userId }: { userId: string }) {
     curTurnUid.current = s.turn;
     tidy(); syncTurnUI();
     setWinnerUid(s.winner || null);
+    gameOver.current = !!s.winner;
     setRematchReady(!!(s.rematch && s.rematch[myId]));
     if (s.winner) {
-      if (endedFor.current !== s.winner) { endedFor.current = s.winner; stopTimer(); recordResult(s.winner === myId); }
+      const key = s.table_id + ":" + s.winner;
+      const lsKey = "rk_rec_" + key;
+      if (recordedKey.current !== key && !localStorage.getItem(lsKey)) {
+        recordedKey.current = key; localStorage.setItem(lsKey, "1"); stopTimer(); recordResult(s.winner === myId);
+      }
       // gdy wszyscy obecni gracze gotowi na rewanż → host rozdaje od nowa
       if (roomRef.current?.iAmOwner) {
         const present = roomRef.current.seats.map((x) => x.id);
         const r = s.rematch || {};
         if (present.length >= 1 && present.every((id) => r[id])) startRematch();
       }
-    } else { endedFor.current = null; }
+    }
   }
   async function toggleRematch() {
     const s = gameState.current; if (!s) return; const myId = meRef.current!.id;
     const r = { ...(s.rematch || {}) }; r[myId] = !r[myId];
-    await supabase.from("game_state").update({ rematch: r }).eq("table_id", s.table_id);
+    const { error } = await supabase.from("game_state").update({ rematch: r }).eq("table_id", s.table_id);
+    if (error) toast("Błąd rewanżu: " + error.message + " (dodaj kolumnę rematch)");
+    else { setRematchReady(r[myId]); gameState.current = { ...s, rematch: r }; }
   }
   async function startRematch() {
     const r = roomRef.current!; if (!r.iAmOwner) return;
@@ -491,7 +504,9 @@ export default function GameApp({ userId }: { userId: string }) {
     const deck = buildDeck(); const hands: Record<string, any[]> = {}; const ent: Record<string, boolean> = {};
     const startN = Math.min(22, Math.max(14, Number((r.table as any).start_tiles) || 14));
     order.forEach((uid) => { hands[uid] = deck.splice(0, startN); ent[uid] = false; });
-    rackLoaded.current = false; endedFor.current = null;
+    const oldKey = "rk_rec_" + r.table.id + ":" + (gameState.current?.winner || "");
+    try { localStorage.removeItem(oldKey); } catch {}
+    rackLoaded.current = false; endedFor.current = null; recordedKey.current = null; gameOver.current = false;
     await supabase.from("game_state").update({ board: [], hands, pool: deck, turn_order: order, turn: order[0], entered: ent, winner: null, rematch: {}, ...dlField() }).eq("table_id", r.table.id);
   }
   function myTurnAlert() {
@@ -517,6 +532,8 @@ export default function GameApp({ userId }: { userId: string }) {
   }
   function mkTileObj(t: any) { return mkTile(t.n, t.c, !!t.j); }
   function newMeld() { const e = document.createElement("div"); e.className = "meld"; melds().appendChild(e); return e; }
+  // nowy meld wstawiony tuż ZA podanym (żeby rozdzielone części zostały w miejscu)
+  function newMeldAfter(ref: HTMLElement) { const e = document.createElement("div"); e.className = "meld"; ref.after(e); return e; }
   function buildBoard(board: any[]) { melds().innerHTML = ""; board.forEach((m: any[]) => { const e = newMeld(); m.forEach((t) => { const el2 = mkTileObj(t); if (t.f) el2.dataset.fresh = "1"; e.appendChild(el2); }); }); }
   function buildRack(hand: any[]) { tray().innerHTML = ""; hand.forEach((t) => tray().appendChild(mkTileObj(t))); }
   function serializeBoard() { return [...melds().querySelectorAll(".meld")].map((m) => tilesOf(m).map((t) => ({ n: t.n, c: t.c, j: t.joker }))); }
@@ -579,13 +596,69 @@ export default function GameApp({ userId }: { userId: string }) {
     }
     return arr.length <= 13;
   }
-  function attachDrag(tile: HTMLElement) {
-    tile.addEventListener("pointerdown", (e) => { if (turn.current !== 0 && !tile.closest(".tray")) return; e.preventDefault(); drag.current = tile; fromMeld.current = tile.closest(".meld"); tile.classList.add("dragging"); const g = tile.cloneNode(true) as HTMLElement; g.classList.add("ghosttile"); g.classList.remove("dragging"); document.body.appendChild(g); ghost.current = g; const c = document.createElement("div"); c.className = "caret"; caret.current = c; tile.setPointerCapture(e.pointerId); moveGhost(e); });
-    tile.addEventListener("pointermove", (e) => { if (drag.current) moveGhost(e); });
-    tile.addEventListener("pointerup", (e) => { if (drag.current) drop(e); });
-    tile.addEventListener("pointercancel", (e) => { if (drag.current) drop(e); });
+  // sąsiad w prawo w tym samym kontenerze
+  function nextSibTile(t: HTMLElement): HTMLElement | null { let n = t.nextElementSibling; while (n && !n.classList.contains("tile")) n = n.nextElementSibling; return n as HTMLElement | null; }
+  // czy zbiór klocków (w kolejności) tworzy spójny fragment serii lub grupy
+  function groupFits(tiles: HTMLElement[]): boolean {
+    if (tiles.length <= 1) return true;
+    const arr = tiles.map(tInfo);
+    const real = arr.filter((t) => !t.j); if (real.length <= 1) return true;
+    const sameVal = real.every((t) => t.n === real[0].n);
+    if (sameVal) { const cols = real.map((t) => t.c); return new Set(cols).size === cols.length; } // grupa: różne kolory
+    if (!real.every((t) => t.c === real[0].c)) return false; // seria: jeden kolor
+    let prev: number | null = null;
+    for (const t of arr) { if (t.j) { if (prev != null) prev++; continue; } if (prev != null && t.n !== prev + 1) return false; prev = t.n; }
+    return true;
   }
-  function beforeIn(cont: Element, x: number) { const tiles = [...cont.querySelectorAll<HTMLElement>(".tile")].filter((t) => t !== drag.current); for (const t of tiles) { const r = t.getBoundingClientRect(); if (x < r.left + r.width / 2) return t; } return null; }
+  function setGroup(tiles: HTMLElement[]) {
+    dragGroup.current.forEach((t) => t.classList.remove("multi"));
+    dragGroup.current = tiles;
+    if (tiles.length > 1) tiles.forEach((t) => t.classList.add("multi")); else tiles.forEach((t) => t.classList.remove("multi"));
+  }
+  function growSelection(anchor: HTMLElement) {
+    const cur = dragGroup.current.length ? dragGroup.current : [anchor];
+    const cand = nextSibTile(cur[cur.length - 1]);
+    if (!cand) { clearTimeout(holdTimer.current); return; }
+    const test = [...cur, cand];
+    if (groupFits(test)) { setGroup(test); try { (navigator as any).vibrate?.(30); } catch {} holdTimer.current = setTimeout(() => growSelection(anchor), 500); }
+    else { clearTimeout(holdTimer.current); }
+  }
+  function attachDrag(tile: HTMLElement) {
+    tile.addEventListener("pointerdown", (e) => {
+      if (gameOver.current) return; if (turn.current !== 0 && !tile.closest(".tray")) return;
+      e.preventDefault(); tile.setPointerCapture(e.pointerId);
+      drag.current = tile; fromMeld.current = tile.closest(".meld"); downPos.current = { x: e.clientX, y: e.clientY };
+      dragging.current = false; setGroup([tile]);
+      // przytrzymanie bez ruchu → rozszerzanie zaznaczenia co 500 ms
+      holdTimer.current = setTimeout(() => growSelection(tile), 500);
+    });
+    tile.addEventListener("pointermove", (e) => {
+      if (!drag.current) return;
+      if (!dragging.current) {
+        const dp = downPos.current!; if (Math.hypot(e.clientX - dp.x, e.clientY - dp.y) < 8) return; // próg ruchu
+        startDragging(e); // pierwszy realny ruch → zaczynamy ciągnąć (z aktualnym zaznaczeniem)
+      }
+      moveGhost(e);
+    });
+    tile.addEventListener("pointerup", (e) => { clearTimeout(holdTimer.current); if (drag.current) { if (dragging.current) drop(e); else cancelDrag(); } });
+    tile.addEventListener("pointercancel", () => { clearTimeout(holdTimer.current); if (drag.current) cancelDrag(); });
+  }
+  function startDragging(e: PointerEvent) {
+    dragging.current = true;
+    clearTimeout(holdTimer.current);
+    // jeśli zaznaczenie jednoklockowe — upewnij się, że to klocek pod kursorem
+    const grp = dragGroup.current.length ? dragGroup.current : [drag.current!];
+    grp.forEach((t) => t.classList.add("dragging"));
+    // duch = klon całej grupy
+    const g = document.createElement("div"); g.className = "ghosttile ghostgroup";
+    grp.forEach((t) => { const cl = t.cloneNode(true) as HTMLElement; cl.classList.remove("dragging", "multi"); g.appendChild(cl); });
+    document.body.appendChild(g); ghost.current = g;
+    const c = document.createElement("div"); c.className = "caret"; caret.current = c;
+  }
+  function cancelDrag() {
+    setGroup([]); drag.current?.classList.remove("dragging"); drag.current = null; fromMeld.current = null; dragging.current = false;
+  }
+  function beforeIn(cont: Element, x: number) { const grp = new Set(dragGroup.current.length ? dragGroup.current : [drag.current!]); const tiles = [...cont.querySelectorAll<HTMLElement>(".tile")].filter((t) => !grp.has(t)); for (const t of tiles) { const r = t.getBoundingClientRect(); if (x < r.left + r.width / 2) return t; } return null; }
   function locate(x: number, y: number): { cont: any; before: HTMLElement | null } | null {
     const elem = document.elementFromPoint(x, y); if (!elem) return null; let cont: any = elem.closest(".tray") ? tray() : null;
     if (turn.current !== 0) return cont ? { cont, before: beforeIn(cont, x) } : null;
@@ -594,52 +667,64 @@ export default function GameApp({ userId }: { userId: string }) {
   }
   function moveGhost(e: PointerEvent) { const g = ghost.current!; g.style.left = e.clientX + "px"; g.style.top = e.clientY + "px"; const loc = locate(e.clientX, e.clientY); const c = caret.current!; if (c.parentNode) c.remove(); if (loc && loc.cont !== "NEW") { loc.before ? loc.cont.insertBefore(c, loc.before) : loc.cont.appendChild(c); } updateAutoScroll(e.clientY); }
   function drop(e: PointerEvent) {
-    const loc = locate(e.clientX, e.clientY); const d = drag.current!; d.classList.remove("dragging"); const c = caret.current!; if (c.parentNode) c.remove();
+    const loc = locate(e.clientX, e.clientY); const c = caret.current!; if (c.parentNode) c.remove();
     autoVel.current = 0; if (scrollRAF.current) { cancelAnimationFrame(scrollRAF.current); scrollRAF.current = null; }
+    // grupa w kolejności DOM
+    let grp = (dragGroup.current.length ? dragGroup.current : [drag.current!]).slice();
+    grp.sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1);
+    grp.forEach((t) => t.classList.remove("dragging", "multi"));
+    const srcMeld = fromMeld.current;
+    // zapamiętaj pozycję do ewentualnego cofnięcia
+    const anchor = grp[0]; const homeParent = anchor.parentElement!; const homeNext = grp[grp.length - 1].nextSibling;
+    const restore = () => { grp.forEach((t) => homeParent.insertBefore(t, homeNext)); };
     let changed = false; let destMeld: HTMLElement | null = null;
+
     if (loc) {
       let cont: any = loc.cont; if (cont === "NEW") cont = newMeld();
       if (cont !== tray()) destMeld = cont;
-      if (cont === tray() && fromMeld.current && d.dataset.fresh !== "1") {
-        fromMeld.current.appendChild(d); // blokada: cudze/zatwierdzone klocki zostają na stole
-        toast("Możesz zdjąć tylko klocki położone w tej turze");
-      } else {
-        if (loc.before && loc.before !== c) cont.insertBefore(d, loc.before); else cont.appendChild(d);
-        if (cont.classList && cont.classList.contains("meld")) {
-          if (!validMeld(tilesOf(cont))) {
-            // próba rozdzielenia ciągu na dwa w miejscu wrzuconego klocka
-            if (trySplitMeld(cont, d)) { changed = true; if (fromMeld.current !== cont) { d.dataset.fresh = "1"; } playedThisTurn.current = true; }
-            else { cont.classList.add("bad"); const ref = cont; setTimeout(() => ref.classList.remove("bad"), 350); if (fromMeld.current) fromMeld.current.appendChild(d); else tray().appendChild(d); }
-          }
-          else { changed = true; if (fromMeld.current !== cont) { d.dataset.fresh = "1"; playedThisTurn.current = true; } } // klocek z ręki -> oznacz jako z tej tury
-        } else { changed = true; if (cont === tray()) delete d.dataset.fresh; } // wrócił na tabliczkę
+
+      if (cont === tray()) {
+        // zdejmowanie na tabliczkę — tylko klocki z tej tury (fresh)
+        if (srcMeld && grp.some((t) => t.dataset.fresh !== "1")) { restore(); toast("Możesz zdjąć tylko klocki położone w tej turze"); }
+        else { const ref = loc.before && loc.before !== c ? loc.before : null; grp.forEach((t) => { delete t.dataset.fresh; ref ? cont.insertBefore(t, ref) : cont.appendChild(t); }); changed = true; }
+      } else if (cont.classList && cont.classList.contains("meld")) {
+        const empty = !cont.querySelector(".tile");
+        const ref = loc.before && loc.before !== c ? loc.before : null;
+        grp.forEach((t) => { ref ? cont.insertBefore(t, ref) : cont.appendChild(t); });
+        if (validMeld(tilesOf(cont))) {
+          changed = true; if (srcMeld !== cont) grp.forEach((t) => (t.dataset.fresh = "1")); playedThisTurn.current = true;
+        } else if (empty) {
+          // świeży, pusty meld z niepoprawną grupą → odrzuć
+          restore(); cont.remove(); toast("Ten układ nie jest poprawny");
+        } else {
+          // wrzucenie w środek/koniec istniejącego — spróbuj rozciąć wokół wrzuconej grupy
+          if (trySplitAroundGroup(cont, grp)) { changed = true; if (srcMeld !== cont) grp.forEach((t) => (t.dataset.fresh = "1")); playedThisTurn.current = true; }
+          else { restore(); cont.classList.add("bad"); const rf = cont; setTimeout(() => rf.classList.remove("bad"), 350); toast("Tu nie pasuje — upuść na puste pole stołu"); }
+        }
       }
     }
-    // po wyjęciu klocka ze źródłowego ciągu — rozdziel go w miejscu powstałej dziury
-    if (changed && fromMeld.current && fromMeld.current !== destMeld && fromMeld.current.isConnected) splitAtGaps(fromMeld.current);
-    tidy(); syncTurnUI();
+    // po wyjęciu klocków ze źródłowego ciągu — rozdziel go w miejscu powstałej dziury
+    if (changed && srcMeld && srcMeld !== destMeld && srcMeld.isConnected) splitAtGaps(srcMeld);
+    setGroup([]); tidy(); syncTurnUI();
     if (changed) { pushHistory(); pushBoard(); }
-    ghost.current?.remove(); ghost.current = null; drag.current = null; caret.current = null; fromMeld.current = null;
+    ghost.current?.remove(); ghost.current = null; drag.current = null; caret.current = null; fromMeld.current = null; dragging.current = false;
   }
-  // Rozdziel ciąg na dwa w miejscu wrzuconego klocka `d`.
-  // Część PRZED d (z d na końcu) zostaje w tym meldzie; część OD następnego klocka idzie do nowego meldu.
-  // Oba muszą być poprawne (dopuszczamy 2-klockowe — wtedy tura i tak się nie zakończy, ale układ widać).
-  function trySplitMeld(meld: HTMLElement, d: HTMLElement): boolean {
-    const tiles = [...meld.querySelectorAll<HTMLElement>(".tile")];
-    const idx = tiles.indexOf(d);
-    if (idx <= 0 || idx >= tiles.length - 1) return false; // wrzucony klocek musi być w środku
-    const toArr = (els: HTMLElement[]) => els.map((t) => ({ n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c!, joker: t.dataset.joker === "1" }));
-    // wariant A: d zaczyna prawą część (7-8-9 | 9-10-11-12)
-    const aL = tiles.slice(0, idx), aR = tiles.slice(idx);
-    // wariant B: d kończy lewą część
-    const bL = tiles.slice(0, idx + 1), bR = tiles.slice(idx + 1);
-    const ok = (els: HTMLElement[]) => els.length >= 2 && validMeld(toArr(els));
-    let L: HTMLElement[] | null = null, R: HTMLElement[] | null = null;
-    if (ok(aL) && ok(aR)) { L = aL; R = aR; }
-    else if (ok(bL) && ok(bR)) { L = bL; R = bR; }
-    if (!L || !R) return false;
-    const nm = newMeld();
-    R.forEach((t) => nm.appendChild(t)); // prawa część do nowego meldu; lewa zostaje
+  // wrzucenie grupy w środek istniejącego ciągu → rozbij na: [lewa] [grupa] [prawa], każdą poprawną część jako osobny meld
+  function trySplitAroundGroup(meld: HTMLElement, grp: HTMLElement[]): boolean {
+    const all = [...meld.querySelectorAll<HTMLElement>(".tile")];
+    const gset = new Set(grp);
+    const first = all.findIndex((t) => gset.has(t)); const last = all.length - 1 - [...all].reverse().findIndex((t) => gset.has(t));
+    // grupa musi być spójna w środku
+    for (let i = first; i <= last; i++) if (!gset.has(all[i])) return false;
+    const left = all.slice(0, first), mid = all.slice(first, last + 1), right = all.slice(last + 1);
+    const toArr = (els: HTMLElement[]) => els.map(tInfo).map((t) => ({ n: t.n, c: t.c, joker: t.j }));
+    const okOrEmpty = (els: HTMLElement[]) => els.length === 0 || validMeld(toArr(els));
+    if (!okOrEmpty(left) || !validMeld(toArr(mid)) || !okOrEmpty(right)) return false;
+    let ref: HTMLElement = meld;
+    // lewa zostaje w meld; mid i right do nowych meldów w miejscu
+    if (left.length === 0) { /* mid zostaje na początku tego meldu */ }
+    else { const m2 = newMeldAfter(ref); mid.forEach((t) => m2.appendChild(t)); ref = m2; }
+    if (right.length) { const m3 = newMeldAfter(ref); right.forEach((t) => m3.appendChild(t)); }
     return true;
   }
   // Po wyjęciu klocka ze środka ciągu rozetnij meld w miejscu „dziury".
@@ -665,8 +750,9 @@ export default function GameApp({ userId }: { userId: string }) {
     }
     if (cur.length) segments.push(cur);
     if (segments.length <= 1) return; // brak dziury
-    // pierwszy segment zostaje w obecnym meldzie, kolejne do nowych meldów
-    for (let i = 1; i < segments.length; i++) { const nm = newMeld(); segments[i].forEach((t) => nm.appendChild(t)); }
+    // pierwszy segment zostaje w obecnym meldzie, kolejne do nowych meldów tuż za nim (w miejscu)
+    let ref: HTMLElement = meld;
+    for (let i = 1; i < segments.length; i++) { const nm = newMeldAfter(ref); segments[i].forEach((t) => nm.appendChild(t)); ref = nm; }
   }
   function renderOpps() {
     const box = el("opponents"); if (!box) return;
@@ -691,17 +777,18 @@ export default function GameApp({ userId }: { userId: string }) {
     return { tiles, complete, points, count: ms.length };
   }
   function syncTurnUI() {
-    const my = turn.current === 0; const yl = el("youlabel"); if (!yl) return;
-    yl.classList.toggle("off", !my); yl.innerHTML = (my ? "Twoja kolej" : "Czekaj na swój ruch") + ' · <span id="count">' + tray().children.length + "</span> klocków";
-    // dobieranie możliwe tylko, jeśli nic jeszcze nie wyłożyłeś w tej turze
-    (el("draw") as HTMLButtonElement).disabled = !my || playedThisTurn.current; (el("sort") as HTMLButtonElement).disabled = false;
+    const yl = el("youlabel"); if (!yl) return;
+    const over = gameOver.current; const my = !over && turn.current === 0;
+    yl.classList.toggle("off", !my); yl.innerHTML = (over ? "Koniec gry" : my ? "Twoja kolej" : "Czekaj na swój ruch") + ' · <span id="count">' + tray().children.length + "</span> klocków";
+    const draw = el("draw") as HTMLButtonElement | null; if (draw) draw.disabled = !my || playedThisTurn.current;
+    const sort = el("sort") as HTMLButtonElement | null; if (sort) sort.disabled = over;
     const undoBtn = el("undo") as HTMLButtonElement | null; if (undoBtn) undoBtn.disabled = !my || history.current.length <= 1;
     const resetBtn = el("reset") as HTMLButtonElement | null; if (resetBtn) resetBtn.disabled = !my || history.current.length <= 1;
     const b = boardState(); const newPts = b.points - committedPoints();
     let canEnd = my && playedThisTurn.current && b.complete;
     if (my && !entered.current) canEnd = canEnd && newPts >= 30;
-    (el("endturn") as HTMLButtonElement).disabled = !canEnd;
-    setEntryInfo(my && !entered.current ? { points: newPts, canClear: playedThisTurn.current, complete: b.complete } : null);
+    const endb = el("endturn") as HTMLButtonElement | null; if (endb) endb.disabled = !canEnd;
+    setEntryInfo(!over && my && !entered.current ? { points: newPts, canClear: playedThisTurn.current, complete: b.complete } : null);
     renderOpps();
   }
   async function commitTurn() {
@@ -783,13 +870,54 @@ export default function GameApp({ userId }: { userId: string }) {
     drawTile(); // kara: dobranie + przekazanie tury
   }
   function stopTimer() { if (timerInt.current) clearInterval(timerInt.current); timerInt.current = null; }
-  function doSort() { const t = tray(); const ts = [...t.children].filter((x) => x.classList.contains("tile")) as HTMLElement[]; ts.sort((a, b) => COLORS.indexOf(a.dataset.c!) - COLORS.indexOf(b.dataset.c!) || (+a.dataset.n! - +b.dataset.n!)); ts.forEach((x) => t.appendChild(x)); }
+  function rackTiles(): HTMLElement[] { return [...tray().querySelectorAll<HTMLElement>(".tile")]; }
+  function tInfo(t: HTMLElement) { return { n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c!, j: t.dataset.joker === "1" }; }
+  // znajdź gotowe układy z ręki: "run" = serie (kolor, rosnące), "group" = grupy (ta sama wartość, różne kolory)
+  function findReadyMelds(tiles: HTMLElement[], mode: "run" | "group"): HTMLElement[][] {
+    const used = new Set<HTMLElement>(); const result: HTMLElement[][] = [];
+    const real = tiles.filter((t) => t.dataset.joker !== "1");
+    if (mode === "run") {
+      for (const c of COLORS) {
+        const col = real.filter((t) => t.dataset.c === c && !used.has(t)).sort((a, b) => +a.dataset.n! - +b.dataset.n!);
+        let i = 0;
+        while (i < col.length) {
+          const seq = [col[i]]; let j = i + 1;
+          while (j < col.length && +col[j].dataset.n! === +seq[seq.length - 1].dataset.n! + 1) { seq.push(col[j]); j++; }
+          if (seq.length >= 3) { seq.forEach((t) => used.add(t)); result.push(seq); }
+          i = j > i + 1 ? j : i + 1;
+        }
+      }
+    } else {
+      for (let v = 1; v <= 13; v++) {
+        const grp: HTMLElement[] = []; const seenCols = new Set<string>();
+        for (const t of real) { if (used.has(t) || +t.dataset.n! !== v) continue; if (seenCols.has(t.dataset.c!)) continue; seenCols.add(t.dataset.c!); grp.push(t); }
+        if (grp.length >= 3) { grp.forEach((t) => used.add(t)); result.push(grp); }
+      }
+    }
+    return result;
+  }
+  function sortRack(mode: "run" | "group") {
+    if (gameOver.current || turn.current !== 0) return;
+    const t = tray(); const tiles = rackTiles();
+    const ready = findReadyMelds(tiles, mode);
+    const usedIds = new Set(ready.flat().map((x) => x.dataset.id));
+    let rest = tiles.filter((x) => !usedIds.has(x.dataset.id) && x.dataset.joker !== "1");
+    const jokers = tiles.filter((x) => x.dataset.joker === "1");
+    if (mode === "run") rest.sort((a, b) => COLORS.indexOf(a.dataset.c!) - COLORS.indexOf(b.dataset.c!) || (+a.dataset.n! - +b.dataset.n!));
+    else rest.sort((a, b) => (+a.dataset.n! - +b.dataset.n!) || COLORS.indexOf(a.dataset.c!) - COLORS.indexOf(b.dataset.c!));
+    t.innerHTML = "";
+    // gotowe układy na początek, każdy oddzielony separatorem
+    ready.forEach((meld, i) => { meld.forEach((tile) => t.appendChild(tile)); if (i < ready.length - 1 || rest.length || jokers.length) { const sep = document.createElement("div"); sep.className = "racksep"; t.appendChild(sep); } });
+    rest.forEach((tile) => t.appendChild(tile));
+    jokers.forEach((tile) => t.appendChild(tile));
+  }
   async function recordResult(won: boolean) {
     const np = { ...meRef.current! }; if (won) np.wins = (np.wins || 0) + 1; np.games = (np.games || 0) + 1; meRef.current = np; setMe(np);
     await supabase.from("profiles").update({ wins: np.wins, games: np.games }).eq("id", np.id);
   }
   async function hostEnd() {
     stopTimer(); const r = roomRef.current!;
+    recordedKey.current = null; gameOver.current = false; setWinnerUid(null); setRematchReady(false);
     await supabase.from("game_state").delete().eq("table_id", r.table.id);
     await supabase.from("game_tables").update({ status: "waiting" }).eq("id", r.table.id);
     await supabase.from("table_members").update({ ready: false }).eq("table_id", r.table.id);
@@ -1033,7 +1161,8 @@ export default function GameApp({ userId }: { userId: string }) {
                 <>
                   <button className="btn ghost" id="undo" title="Cofnij ruch" style={{ padding: "8px 11px" }} onClick={undoMove}>↶</button>
                   <button className="btn ghost" id="reset" title="Cofnij wszystko" style={{ padding: "8px 11px" }} onClick={resetMoves}>⟲</button>
-                  <button className="btn ghost" id="sort" style={{ padding: "8px 12px" }} onClick={doSort}>Sortuj</button>
+                  <button className="btn ghost" id="sort" title="Sortuj w serie (kolor, rosnąco)" style={{ padding: "8px 10px" }} onClick={() => sortRack("run")}>789</button>
+                  <button className="btn ghost" title="Sortuj w grupy (po wartości)" style={{ padding: "8px 10px" }} onClick={() => sortRack("group")}>777</button>
                   <button className="btn" id="draw" style={{ padding: "8px 12px" }} onClick={drawTile}>Dobierz</button>
                   <button className="btn blue" id="endturn" style={{ padding: "8px 12px", marginLeft: "auto" }} onClick={commitTurn}>Zakończ turę</button>
                 </>
