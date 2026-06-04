@@ -67,6 +67,7 @@ export default function GameApp({ userId }: { userId: string }) {
       if (!active) return;
       if (!prof) { toast("Nie udało się wczytać profilu"); return; }
       meRef.current = prof; setMe(prof);
+      syncClock();
       if (prof.status === "inv") statusMode.current = "inv";
       else { statusMode.current = "auto"; broadcastStatus("on"); }
       await Promise.all([loadFriends(), loadRequests(), loadTables()]);
@@ -405,6 +406,7 @@ export default function GameApp({ userId }: { userId: string }) {
   const rackLoaded = useRef(false); // tabliczkę ładujemy z bazy tylko raz (zachowujemy ułożenie gracza)
   const boardPushT = useRef<any>(null);
   const deadlineActing = useRef(false);
+  const clockSkew = useRef(0); // serverNow - clientNow (ms)
   const hasDeadlineCol = useRef(true); // gdy w bazie brak kolumny turn_deadline — pomijamy ją w zapisach
   const history = useRef<{ board: any[]; rack: any[] }[]>([]);
   const scrollRAF = useRef<number | null>(null);
@@ -419,6 +421,7 @@ export default function GameApp({ userId }: { userId: string }) {
   }
   async function startGame() {
     const r = roomRef.current!; setView("game"); playedThisTurn.current = false; endedFor.current = null; rackLoaded.current = false; setEntryInfo(null); setWinnerUid(null); setRematchReady(false); gameOver.current = false;
+    await syncClock();
     let { data: gs, error: selErr } = await supabase.from("game_state").select("*").eq("table_id", r.table.id).maybeSingle();
     if (selErr) toast("Błąd odczytu gry: " + selErr.message);
     if (!gs && r.iAmOwner) {
@@ -828,9 +831,25 @@ export default function GameApp({ userId }: { userId: string }) {
     // zapisz też aktualną (czystą) planszę — istotne po timeoucie, gdy cofnęliśmy niedokończone układy
     await supabase.from("game_state").update({ pool, hands, board: serializeBoard(), turn: nextUid, ...dlField() }).eq("table_id", s.table_id);
   }
+  // offset zegara: serverNow - clientNow (ms). Liczymy czas tury w czasie SERWERA,
+  // żeby różnice zegarów między telefonami nie psuły licznika.
+  async function syncClock() {
+    try {
+      const { data, error } = await supabase.rpc("now_ms");
+      if (!error && data != null) { clockSkew.current = Number(data) - Date.now(); return; }
+    } catch {}
+    // fallback: nagłówek Date z odpowiedzi Supabase (gdy brak funkcji now_ms)
+    try {
+      const t0 = Date.now();
+      const res = await fetch((process.env.NEXT_PUBLIC_SUPABASE_URL || "") + "/auth/v1/health", { headers: { apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "" } });
+      const t1 = Date.now(); const d = res.headers.get("date");
+      if (d) clockSkew.current = new Date(d).getTime() + (t1 - t0) / 2 - t1;
+    } catch {}
+  }
+  function serverNow() { return Date.now() + clockSkew.current; }
   function newDeadline(): string | null {
     const m = roomRef.current?.table.time_mode; if (!m || m === "none") return null;
-    return new Date(Date.now() + Number(m) * 1000).toISOString();
+    return new Date(serverNow() + Number(m) * 1000).toISOString();
   }
   function dlField(): Record<string, any> { return hasDeadlineCol.current ? { turn_deadline: newDeadline() } : {}; }
   function amINext(): boolean {
@@ -843,7 +862,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const tick = () => {
       const dl = gameState.current?.turn_deadline;
       if (!dl) { tEl.textContent = "⏱ —"; return; }
-      let rem = Math.ceil((new Date(dl).getTime() - Date.now()) / 1000); if (rem < 0) rem = 0;
+      let rem = Math.ceil((new Date(dl).getTime() - serverNow()) / 1000); if (rem < 0) rem = 0;
       tEl.textContent = "⏱ 0:" + String(rem).padStart(2, "0"); tEl.classList.toggle("low", rem <= 10);
       if (rem <= 0) handleDeadline();
     };
@@ -852,7 +871,7 @@ export default function GameApp({ userId }: { userId: string }) {
   function handleDeadline() {
     if (deadlineActing.current) return;
     const s = gameState.current; if (!s || !s.turn_deadline) return;
-    const over = (Date.now() - new Date(s.turn_deadline).getTime()) / 1000;
+    const over = (serverNow() - new Date(s.turn_deadline).getTime()) / 1000;
     if (turn.current === 0) { deadlineActing.current = true; timeoutTurn(); setTimeout(() => (deadlineActing.current = false), 3000); }
     else if (over >= 5 && amINext()) { deadlineActing.current = true; forceSkipAbsent(); setTimeout(() => (deadlineActing.current = false), 3000); }
   }

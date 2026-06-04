@@ -256,6 +256,11 @@ create policy gs_update_member on game_state for update using (public.is_table_m
 drop policy if exists gs_delete_host on game_state;
 create policy gs_delete_host on game_state for delete using (public.is_table_host(table_id, auth.uid()));
 
+-- ========= CZAS SERWERA (do licznika tury, niezależny od zegarów telefonów) =========
+create or replace function now_ms() returns bigint
+  language sql stable as $$ select (extract(epoch from clock_timestamp()) * 1000)::bigint $$;
+grant execute on function now_ms() to anon, authenticated;
+
 -- ========= 5) REALTIME =========
 alter publication supabase_realtime add table game_tables;
 alter publication supabase_realtime add table table_members;
