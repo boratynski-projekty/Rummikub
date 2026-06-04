@@ -655,8 +655,16 @@ export default function GameApp({ userId }: { userId: string }) {
     document.body.appendChild(g); ghost.current = g;
     const c = document.createElement("div"); c.className = "caret"; caret.current = c;
   }
+  function cleanupGhosts() {
+    clearTimeout(holdTimer.current);
+    document.querySelectorAll(".ghosttile").forEach((g) => g.remove());
+    document.querySelectorAll(".caret").forEach((c) => c.remove());
+    document.querySelectorAll(".tile.dragging").forEach((t) => t.classList.remove("dragging"));
+    autoVel.current = 0; if (scrollRAF.current) { cancelAnimationFrame(scrollRAF.current); scrollRAF.current = null; }
+    ghost.current = null; caret.current = null;
+  }
   function cancelDrag() {
-    setGroup([]); drag.current?.classList.remove("dragging"); drag.current = null; fromMeld.current = null; dragging.current = false;
+    setGroup([]); cleanupGhosts(); drag.current = null; fromMeld.current = null; dragging.current = false;
   }
   function beforeIn(cont: Element, x: number) { const grp = new Set(dragGroup.current.length ? dragGroup.current : [drag.current!]); const tiles = [...cont.querySelectorAll<HTMLElement>(".tile")].filter((t) => !grp.has(t)); for (const t of tiles) { const r = t.getBoundingClientRect(); if (x < r.left + r.width / 2) return t; } return null; }
   function locate(x: number, y: number): { cont: any; before: HTMLElement | null } | null {
@@ -707,7 +715,7 @@ export default function GameApp({ userId }: { userId: string }) {
     if (changed && srcMeld && srcMeld !== destMeld && srcMeld.isConnected) splitAtGaps(srcMeld);
     setGroup([]); tidy(); syncTurnUI();
     if (changed) { pushHistory(); pushBoard(); }
-    ghost.current?.remove(); ghost.current = null; drag.current = null; caret.current = null; fromMeld.current = null; dragging.current = false;
+    cleanupGhosts(); drag.current = null; fromMeld.current = null; dragging.current = false;
   }
   // wrzucenie grupy w środek istniejącego ciągu → rozbij na: [lewa] [grupa] [prawa], każdą poprawną część jako osobny meld
   function trySplitAroundGroup(meld: HTMLElement, grp: HTMLElement[]): boolean {
@@ -972,6 +980,19 @@ export default function GameApp({ userId }: { userId: string }) {
     return () => iv && clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
+
+  /* ===== BEZPIECZNIK przeciągania: sprzątanie „zawieszonych" duchów ===== */
+  useEffect(() => {
+    const finish = (e: PointerEvent) => { if (!drag.current) { if (document.querySelector(".ghosttile")) cleanupGhosts(); return; } if (dragging.current) drop(e); else cancelDrag(); };
+    const onMove = (e: PointerEvent) => { if (drag.current && dragging.current) moveGhost(e); };
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    window.addEventListener("pointermove", onMove);
+    const onVis = () => { if (document.visibilityState === "hidden") cancelDrag(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { window.removeEventListener("pointerup", finish); window.removeEventListener("pointercancel", finish); window.removeEventListener("pointermove", onMove); document.removeEventListener("visibilitychange", onVis); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ===== PWA ===== */
   useEffect(() => {
