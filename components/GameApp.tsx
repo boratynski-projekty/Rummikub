@@ -473,7 +473,11 @@ export default function GameApp({ userId }: { userId: string }) {
     // Planszę odbudowujemy zawsze, gdy nie jest to moja tura (podgląd ruchu przeciwnika na żywo)
     // oraz na początku mojej tury. Nie ruszamy jej tylko, gdy aktualnie przeciągam klocek.
     if (!drag.current && (!isMyTurn || turnChanged)) buildBoard(s.board || []);
-    if (!rackLoaded.current) { buildRack((s.hands && s.hands[myId]) || []); rackLoaded.current = true; }
+    // Tabliczkę odbudowujemy z bazy gdy: jeszcze nie wczytana, ALBO nie jest moja tura i nie przeciągam
+    // (dzięki temu po wejściu/odświeżeniu nigdy nie zostanie pusta mimo niezerowego licznika).
+    const myHand = (s.hands && s.hands[myId]) || [];
+    if (!rackLoaded.current) { buildRack(myHand); rackLoaded.current = true; }
+    else if (!isMyTurn && !drag.current && tray().querySelectorAll(".tile").length !== myHand.length) { buildRack(myHand); }
     if (turnChanged) { deadlineActing.current = false; if (isMyTurn) { playedThisTurn.current = false; initHistory(); myTurnAlert(); } }
     curTurnUid.current = s.turn;
     tidy(); syncTurnUI();
@@ -829,13 +833,17 @@ export default function GameApp({ userId }: { userId: string }) {
     if (had) toast("Klocki wróciły na tabliczkę");
   }
   async function drawTile() {
-    const s = gameState.current; if (!s) return; const myId = meRef.current!.id; if (s.turn !== myId) return;
+    const sLocal = gameState.current; if (!sLocal) return; const myId = meRef.current!.id; if (sLocal.turn !== myId) return;
     if (playedThisTurn.current) return toast("Nie możesz dobierać po wyłożeniu klocków (najpierw zakończ turę lub sprzątnij)");
-    const pool = [...(s.pool || [])]; let hands = s.hands;
-    if (pool.length) { const t = pool.pop(); hands = { ...s.hands, [myId]: [...(s.hands[myId] || []), t] }; tray().appendChild(mkTileObj(t)); tidy(); } else toast("Brak klocków w puli");
+    // pobierz ŚWIEŻY stan z bazy, by nie dobierać ze starej puli (źródło zdublowanych klocków)
+    const { data: s } = await supabase.from("game_state").select("*").eq("table_id", sLocal.table_id).maybeSingle();
+    if (!s || s.turn !== myId) { if (s) applyState(s); return; }
+    const pool = [...(s.pool || [])]; let hands = s.hands; let drawn: any = null;
+    if (pool.length) { drawn = pool.pop(); hands = { ...s.hands, [myId]: [...(s.hands[myId] || []), drawn] }; } else { toast("Brak klocków w puli"); }
     const order: string[] = s.turn_order; const nextUid = order[(order.indexOf(myId) + 1) % order.length];
     // zapisz też aktualną (czystą) planszę — istotne po timeoucie, gdy cofnęliśmy niedokończone układy
     await supabase.from("game_state").update({ pool, hands, board: serializeBoard(), turn: nextUid, ...dlField() }).eq("table_id", s.table_id);
+    if (drawn) { rackLoaded.current = false; } // wymuś ponowne wczytanie ręki ze świeżego stanu
   }
   // offset zegara: serverNow - clientNow (ms). Liczymy czas tury w czasie SERWERA,
   // żeby różnice zegarów między telefonami nie psuły licznika.
