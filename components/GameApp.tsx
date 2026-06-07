@@ -585,6 +585,8 @@ export default function GameApp({ userId }: { userId: string }) {
   function tilesOf(m: Element) { return [...m.querySelectorAll<HTMLElement>(".tile")].map((t) => ({ n: t.dataset.n ? +t.dataset.n : null, c: t.dataset.c!, joker: t.dataset.joker === "1" })); }
   function validMeld(arr: { n: number | null; c: string; joker: boolean }[]) {
     if (arr.length <= 1) return true; const real = arr.filter((t) => !t.joker); if (real.length === 0) return true;
+    // gotowy układ (3+) musi mieć min. 2 prawdziwe klocki — nie wolno 1 klocek + 2 jokery
+    if (arr.length >= 3 && real.length < 2) return false;
     const sameVal = real.every((t) => t.n === real[0].n);
     if (sameVal) { const cols = real.map((t) => t.c); if (new Set(cols).size !== cols.length) return false; return arr.length <= 4; }
     if (!real.every((t) => t.c === real[0].c)) return false;
@@ -702,14 +704,15 @@ export default function GameApp({ userId }: { userId: string }) {
         const empty = !cont.querySelector(".tile");
         const ref = loc.before && loc.before !== c ? loc.before : null;
         grp.forEach((t) => { ref ? cont.insertBefore(t, ref) : cont.appendChild(t); });
+        const fromRack = !srcMeld; // klocek przyszedł z tabliczki?
         if (validMeld(tilesOf(cont))) {
-          changed = true; if (srcMeld !== cont) grp.forEach((t) => (t.dataset.fresh = "1")); playedThisTurn.current = true;
+          changed = true; if (fromRack) { grp.forEach((t) => (t.dataset.fresh = "1")); playedThisTurn.current = true; }
         } else if (empty) {
           // świeży, pusty meld z niepoprawną grupą → odrzuć
           restore(); cont.remove(); toast("Ten układ nie jest poprawny");
         } else {
           // wrzucenie w środek/koniec istniejącego — spróbuj rozciąć wokół wrzuconej grupy
-          if (trySplitAroundGroup(cont, grp)) { changed = true; if (srcMeld !== cont) grp.forEach((t) => (t.dataset.fresh = "1")); playedThisTurn.current = true; }
+          if (trySplitAroundGroup(cont, grp)) { changed = true; if (fromRack) { grp.forEach((t) => (t.dataset.fresh = "1")); playedThisTurn.current = true; } }
           else { restore(); cont.classList.add("bad"); const rf = cont; setTimeout(() => rf.classList.remove("bad"), 350); toast("Tu nie pasuje — upuść na puste pole stołu"); }
         }
       }
@@ -785,7 +788,9 @@ export default function GameApp({ userId }: { userId: string }) {
     const tiles = ms.reduce((n, m) => n + m.querySelectorAll(".tile").length, 0);
     const complete = ms.length > 0 && ms.every((m) => { const a = tilesOf(m); return a.length >= 3 && validMeld(a); });
     const points = ms.reduce((s, m) => s + meldPoints(tilesOf(m)), 0);
-    return { tiles, complete, points, count: ms.length };
+    // czy w tej turze położyłem choć jeden klocek z ręki (fresh)? samo przekładanie się nie liczy
+    const placedFromRack = !!melds().querySelector('.tile[data-fresh="1"]');
+    return { tiles, complete, points, count: ms.length, placedFromRack };
   }
   function syncTurnUI() {
     const yl = el("youlabel"); if (!yl) return;
@@ -796,7 +801,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const undoBtn = el("undo") as HTMLButtonElement | null; if (undoBtn) undoBtn.disabled = !my || history.current.length <= 1;
     const resetBtn = el("reset") as HTMLButtonElement | null; if (resetBtn) resetBtn.disabled = !my || history.current.length <= 1;
     const b = boardState(); const newPts = b.points - committedPoints();
-    let canEnd = my && playedThisTurn.current && b.complete;
+    let canEnd = my && b.placedFromRack && b.complete; // samo przekładanie nie kończy tury
     if (my && !entered.current) canEnd = canEnd && newPts >= 30;
     const endb = el("endturn") as HTMLButtonElement | null; if (endb) endb.disabled = !canEnd;
     setEntryInfo(!over && my && !entered.current ? { points: newPts, canClear: playedThisTurn.current, complete: b.complete } : null);
@@ -806,6 +811,7 @@ export default function GameApp({ userId }: { userId: string }) {
     const s = gameState.current; if (!s) return; const myId = meRef.current!.id;
     if (s.turn !== myId) return;
     const b = boardState();
+    if (!b.placedFromRack) { toast("Musisz dołożyć klocek z tabliczki albo dobrać — samo przełożenie nie kończy tury"); return; }
     if (b.count === 0 || !b.complete) { toast("Każdy układ musi mieć min. 3 klocki i być poprawny"); return; }
     if (!entered.current) { const newPts = b.points - committedPoints(); if (newPts < 30) { toast(`Aby wejść do gry potrzebujesz min. 30 pkt (masz ${newPts})`); return; } }
     const newHand = serializeRack();
@@ -909,9 +915,13 @@ export default function GameApp({ userId }: { userId: string }) {
         let i = 0;
         while (i < col.length) {
           const seq = [col[i]]; let j = i + 1;
-          while (j < col.length && +col[j].dataset.n! === +seq[seq.length - 1].dataset.n! + 1) { seq.push(col[j]); j++; }
-          if (seq.length >= 3) { seq.forEach((t) => used.add(t)); result.push(seq); }
-          i = j > i + 1 ? j : i + 1;
+          while (j < col.length) {
+            const nv = +col[j].dataset.n!; const last = +seq[seq.length - 1].dataset.n!;
+            if (nv === last) { j++; continue; }          // duplikat tej samej wartości — pomiń
+            if (nv === last + 1) { seq.push(col[j]); j++; } else break;
+          }
+          if (seq.length >= 3) { seq.forEach((t) => used.add(t)); result.push(seq); i = j; }
+          else i++;
         }
       }
     } else {
